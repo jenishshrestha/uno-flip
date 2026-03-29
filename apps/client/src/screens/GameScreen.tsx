@@ -8,6 +8,7 @@ import type {
   PlayerHand,
   PublicPlayer,
 } from "@uno-flip/shared";
+import { useEffect, useState } from "react";
 import { socket } from "../socket.js";
 import { DARK_COLORS, LIGHT_COLORS } from "../styles.js";
 
@@ -22,6 +23,7 @@ function formatValue(value: CardSide["value"]): string {
   if (typeof value === "number") return String(value);
   const labels: Record<string, string> = {
     skip: "⊘",
+    skip_everyone: "⊘ALL",
     reverse: "⇄",
     draw_one: "+1",
     draw_five: "+5",
@@ -198,10 +200,17 @@ export function GameScreen({
   gameState: GameState;
   hand: PlayerHand | null;
 }) {
+  const [hasDrawn, setHasDrawn] = useState(false);
+
   const myId = socket.id;
   const isMyTurn = gameState.players[gameState.currentPlayerIndex]?.id === myId;
   const currentPlayer = gameState.players[gameState.currentPlayerIndex];
   const opponents = gameState.players.filter((p) => p.id !== myId);
+
+  // Reset hasDrawn when turn changes
+  useEffect(() => {
+    if (!isMyTurn) setHasDrawn(false);
+  }, [isMyTurn]);
 
   // Check if a card can be played (basic check — server validates too)
   const canPlay = (card: Card): boolean => {
@@ -227,6 +236,66 @@ export function GameScreen({
         flexDirection: "column",
       }}
     >
+      {/* Challenge overlay — shown to the player who must draw */}
+      {gameState.phase === "awaiting_challenge" &&
+        gameState.challengeTarget === myId && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              backgroundColor: "rgba(0,0,0,0.8)",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 100,
+              gap: 16,
+            }}
+          >
+            <p style={{ color: "white", fontSize: 20 }}>
+              You've been hit with a Wild Draw!
+            </p>
+            <p style={{ color: "#aaa", fontSize: 14 }}>
+              Accept the penalty or challenge (if you think it was played
+              illegally)
+            </p>
+            <div style={{ display: "flex", gap: 12 }}>
+              <button
+                type="button"
+                onClick={() => socket.emit("ACCEPT_DRAW")}
+                style={{
+                  padding: "12px 24px",
+                  fontSize: 16,
+                  fontWeight: "bold",
+                  borderRadius: 8,
+                  border: "none",
+                  backgroundColor: "#e74c3c",
+                  color: "white",
+                  cursor: "pointer",
+                }}
+              >
+                Accept Draw
+              </button>
+              <button
+                type="button"
+                onClick={() => socket.emit("CHALLENGE_DRAW")}
+                style={{
+                  padding: "12px 24px",
+                  fontSize: 16,
+                  fontWeight: "bold",
+                  borderRadius: 8,
+                  border: "none",
+                  backgroundColor: "#f39c12",
+                  color: "white",
+                  cursor: "pointer",
+                }}
+              >
+                Challenge!
+              </button>
+            </div>
+          </div>
+        )}
+
       {/* Color picker overlay */}
       {gameState.phase === "choosing_color" && isMyTurn && (
         <ColorPicker
@@ -298,7 +367,10 @@ export function GameScreen({
           <button
             type="button"
             onClick={() => {
-              if (isMyTurn) socket.emit("DRAW_CARD");
+              if (isMyTurn && !hasDrawn) {
+                socket.emit("DRAW_CARD");
+                setHasDrawn(true);
+              }
             }}
             style={{
               width: 70,
@@ -332,6 +404,31 @@ export function GameScreen({
       >
         {isMyTurn ? "Your turn!" : `${currentPlayer?.name ?? "..."}'s turn`}
       </p>
+
+      {/* Pass button — shown after drawing a playable card */}
+      {isMyTurn && hasDrawn && (
+        <button
+          type="button"
+          onClick={() => {
+            socket.emit("PASS_TURN");
+            setHasDrawn(false);
+          }}
+          style={{
+            padding: "8px 24px",
+            fontSize: 14,
+            fontWeight: "bold",
+            borderRadius: 8,
+            border: "1px solid #666",
+            backgroundColor: "transparent",
+            color: "#aaa",
+            cursor: "pointer",
+            alignSelf: "center",
+            marginBottom: 12,
+          }}
+        >
+          Pass (don't play drawn card)
+        </button>
+      )}
 
       {/* UNO button */}
       {hand && hand.cards.length <= 2 && isMyTurn && (

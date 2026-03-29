@@ -8,12 +8,15 @@ import { FULL_DECK, GAME_RULES } from "@uno-flip/shared";
 import express from "express";
 import { Server } from "socket.io";
 import {
+  acceptDraw,
   callUno,
   catchUno,
+  challengeDraw,
   createGame,
   type GameInstance,
   getPlayerHand,
   getPublicGameState,
+  passTurn,
   playCard,
   playerDrawCard,
   selectColor,
@@ -77,6 +80,7 @@ function lobbyState(room: {
     drawPileCount: 0,
     hostId: room.hostId,
     chosenColor: null,
+    challengeTarget: null,
   };
 }
 
@@ -213,6 +217,17 @@ io.on("connection", (socket) => {
     broadcastGameState(room.code, room.hostId);
   });
 
+  // ─── PASS TURN (after drawing a playable card) ───
+  socket.on("PASS_TURN", () => {
+    const room = findRoomByPlayerId(socket.id);
+    if (!room) return;
+    const game = games.get(room.code);
+    if (!game) return;
+
+    passTurn(game, socket.id);
+    broadcastGameState(room.code, room.hostId);
+  });
+
   // ─── SELECT COLOR (after playing a wild) ───
   socket.on("SELECT_COLOR", ({ color }) => {
     const room = findRoomByPlayerId(socket.id);
@@ -252,6 +267,45 @@ io.on("connection", (socket) => {
     if (drawn) {
       broadcastGameState(room.code, room.hostId);
     }
+  });
+
+  // ─── ACCEPT DRAW (no challenge) ───
+  socket.on("ACCEPT_DRAW", () => {
+    const room = findRoomByPlayerId(socket.id);
+    if (!room) return;
+    const game = games.get(room.code);
+    if (!game) return;
+
+    const result = acceptDraw(game, socket.id);
+    if (!result.success) {
+      socket.emit("ERROR", { message: result.error ?? "Can't accept" });
+      return;
+    }
+
+    broadcastGameState(room.code, room.hostId);
+  });
+
+  // ─── CHALLENGE DRAW ───
+  socket.on("CHALLENGE_DRAW", () => {
+    const room = findRoomByPlayerId(socket.id);
+    if (!room) return;
+    const game = games.get(room.code);
+    if (!game) return;
+
+    const result = challengeDraw(game, socket.id);
+    if (!result.success) {
+      socket.emit("ERROR", { message: result.error ?? "Can't challenge" });
+      return;
+    }
+
+    io.to(room.code).emit("CHALLENGE_RESULT", {
+      challengerId: socket.id,
+      challengedId: result.penaltyPlayerId,
+      success: result.challengeSuccess,
+      penaltyCards: result.penaltyCards,
+    });
+
+    broadcastGameState(room.code, room.hostId);
   });
 
   // ─── DISCONNECT ───

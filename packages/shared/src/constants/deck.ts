@@ -1,37 +1,29 @@
 import type { Card, CardValue, DarkColor, LightColor } from "../types/card.js";
 
-// ─── Color pairings ───
-// Each light color maps to a dark color on the flip side.
-// When you flip a red card over, you see pink on the back.
+// ─── Official UNO Flip color pairings (light ↔ dark on same physical card) ───
 const COLOR_PAIRS: [LightColor, DarkColor][] = [
-  ["red", "pink"],
-  ["yellow", "teal"],
-  ["green", "orange"],
-  ["blue", "purple"],
+  ["red", "orange"],
+  ["blue", "teal"],
+  ["yellow", "pink"],
+  ["green", "purple"],
 ];
 
-// ─── Action card pairings (light side → dark side) ───
+// ─── Action card pairings (light side → dark side equivalent) ───
 const ACTION_PAIRS: [CardValue, CardValue][] = [
-  ["skip", "skip"],
+  ["skip", "skip_everyone"], // light Skip → dark Skip Everyone
   ["reverse", "reverse"],
-  ["draw_one", "draw_five"],
+  ["draw_one", "draw_five"], // light Draw One → dark Draw Five
 ];
 
 // ─── Build the full 112-card deck ───
+// Per color (×4): 18 numbers (1-9 × 2) + 6 actions (3 types × 2) + 2 flip = 26
+// 26 × 4 = 104 colored cards + 4 Wild + 4 Wild Draw = 112 total
 function buildDeck(): Card[] {
   const cards: Card[] = [];
   let id = 0;
 
-  // For each color pair (red/pink, yellow/teal, green/orange, blue/purple)
   for (const [lightColor, darkColor] of COLOR_PAIRS) {
-    // One 0 card per color
-    cards.push({
-      id: id++,
-      light: { color: lightColor, value: 0 },
-      dark: { color: darkColor, value: 0 },
-    });
-
-    // Two of each number 1-9
+    // Two of each number 1-9 (no 0 in UNO Flip)
     for (let num = 1; num <= 9; num++) {
       const value = num as CardValue;
       cards.push({
@@ -46,7 +38,7 @@ function buildDeck(): Card[] {
       });
     }
 
-    // Two of each action card (skip, reverse, draw)
+    // Two of each action card (skip/skip_everyone, reverse, draw_one/draw_five)
     for (const [lightAction, darkAction] of ACTION_PAIRS) {
       cards.push({
         id: id++,
@@ -60,7 +52,12 @@ function buildDeck(): Card[] {
       });
     }
 
-    // One Flip card per color
+    // Two Flip cards per color
+    cards.push({
+      id: id++,
+      light: { color: lightColor, value: "flip" },
+      dark: { color: darkColor, value: "flip" },
+    });
     cards.push({
       id: id++,
       light: { color: lightColor, value: "flip" },
@@ -68,7 +65,7 @@ function buildDeck(): Card[] {
     });
   }
 
-  // 4 Wild cards (no color — you pick when you play it)
+  // 4 Wild cards
   for (let i = 0; i < 4; i++) {
     cards.push({
       id: id++,
@@ -77,9 +74,7 @@ function buildDeck(): Card[] {
     });
   }
 
-  // 4 Wild Draw cards
-  // Light side: Wild Draw Two (next player draws 2)
-  // Dark side: Wild Draw Color (next player draws until they get the chosen color!)
+  // 4 Wild Draw cards (light: Wild Draw Two, dark: Wild Draw Color)
   for (let i = 0; i < 4; i++) {
     cards.push({
       id: id++,
@@ -91,11 +86,9 @@ function buildDeck(): Card[] {
   return cards;
 }
 
-// ─── The complete deck — exported for use everywhere ───
 export const FULL_DECK: readonly Card[] = buildDeck();
 
-// Quick sanity check: should always be 112
-// 4 colors × 26 cards + 8 wilds = 112
+// Sanity check: 4 colors × 26 cards + 8 wilds = 112
 if (FULL_DECK.length !== 112) {
   throw new Error(`Deck should have 112 cards, but has ${FULL_DECK.length}`);
 }

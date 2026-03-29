@@ -2,8 +2,6 @@ import type { CardSide, DarkColor, LightColor } from "./card.js";
 import type { GameState, PlayerHand, PublicPlayer } from "./game.js";
 
 // ─── Client → Server events ───
-// These are like API calls, but over WebSocket instead of HTTP.
-// Instead of fetch("/api/play-card", ...) you do socket.emit("PLAY_CARD", ...)
 export interface ClientToServerEvents {
   CREATE_ROOM: (data: { playerName: string }) => void;
   JOIN_ROOM: (data: { roomCode: string; playerName: string }) => void;
@@ -13,11 +11,12 @@ export interface ClientToServerEvents {
   CALL_UNO: () => void;
   CATCH_UNO: (data: { targetPlayerId: string }) => void;
   SELECT_COLOR: (data: { color: LightColor | DarkColor }) => void;
+  PASS_TURN: () => void; // pass after drawing a playable card
+  CHALLENGE_DRAW: () => void; // target challenges a wild draw two/color
+  ACCEPT_DRAW: () => void; // target accepts the draw penalty
 }
 
 // ─── Server → Client events ───
-// These are like push notifications from the server.
-// Instead of polling "did anything change?", the server tells you instantly.
 export interface ServerToClientEvents {
   ROOM_CREATED: (data: { roomCode: string }) => void;
   PLAYER_JOINED: (data: { player: PublicPlayer }) => void;
@@ -26,6 +25,12 @@ export interface ServerToClientEvents {
   HAND_UPDATE: (data: { hand: PlayerHand }) => void;
   CARD_PLAYED: (data: { playerId: string; card: CardSide }) => void;
   FLIP_EVENT: () => void;
+  CHALLENGE_RESULT: (data: {
+    challengerId: string;
+    challengedId: string;
+    success: boolean; // true = illegal play caught, false = legal play
+    penaltyCards: number;
+  }) => void;
   ROUND_OVER: (data: {
     winnerId: string;
     scores: Record<string, number>;
