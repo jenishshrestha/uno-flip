@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { networkInterfaces } from "node:os";
 import type {
   ClientToServerEvents,
   GameState,
@@ -19,7 +20,9 @@ import {
   passTurn,
   playCard,
   playerDrawCard,
+  reconnectPlayer,
   selectColor,
+  startNextRound,
 } from "./game-engine.js";
 import {
   createRoom,
@@ -27,13 +30,14 @@ import {
   getPublicPlayers,
   getRoom,
   joinRoom,
+  rejoinRoom,
   removePlayer,
 } from "./room-manager.js";
 
 const app = express();
 
 app.use((_req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "http://localhost:5173");
+  res.header("Access-Control-Allow-Origin", "*");
   next();
 });
 
@@ -41,7 +45,7 @@ const httpServer = createServer(app);
 
 const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: "*",
   },
 });
 
@@ -81,6 +85,7 @@ function lobbyState(room: {
     hostId: room.hostId,
     chosenColor: null,
     challengeTarget: null,
+    scores: {},
   };
 }
 
@@ -111,7 +116,26 @@ io.on("connection", (socket) => {
 
   // ─── JOIN ROOM ───
   socket.on("JOIN_ROOM", ({ roomCode, playerName }) => {
-    const result = joinRoom(roomCode.toUpperCase(), socket.id, playerName);
+    const code = roomCode.toUpperCase();
+
+    // Try mid-game reconnection first
+    const rejoin = rejoinRoom(code, socket.id, playerName);
+    if (rejoin) {
+      const { room, oldSocketId } = rejoin;
+      socket.join(room.code);
+
+      const game = games.get(room.code);
+      if (game) {
+        reconnectPlayer(game, oldSocketId, socket.id);
+        broadcastGameState(room.code, room.hostId);
+      }
+
+      console.log(`${playerName} reconnected to room ${room.code}`);
+      return;
+    }
+
+    // Normal join (pre-game)
+    const result = joinRoom(code, socket.id, playerName);
 
     if (!("room" in result)) {
       socket.emit("ERROR", { message: result.error });
@@ -252,8 +276,15 @@ io.on("connection", (socket) => {
     const game = games.get(room.code);
     if (!game) return;
 
-    callUno(game, socket.id);
-    broadcastGameState(room.code, room.hostId);
+    const success = callUno(game, socket.id);
+    if (success) {
+      const name = game.playerNames.get(socket.id) ?? "Someone";
+      io.to(room.code).emit("UNO_CALLED", {
+        playerId: socket.id,
+        playerName: name,
+      });
+      broadcastGameState(room.code, room.hostId);
+    }
   });
 
   // ─── CATCH UNO ───
@@ -265,6 +296,12 @@ io.on("connection", (socket) => {
 
     const drawn = catchUno(game, socket.id, targetPlayerId);
     if (drawn) {
+      const targetName = game.playerNames.get(targetPlayerId) ?? "Someone";
+      io.to(room.code).emit("UNO_CAUGHT", {
+        catcherId: socket.id,
+        targetId: targetPlayerId,
+        targetName,
+      });
       broadcastGameState(room.code, room.hostId);
     }
   });
@@ -308,23 +345,65 @@ io.on("connection", (socket) => {
     broadcastGameState(room.code, room.hostId);
   });
 
+  // ─── START NEXT ROUND ───
+  socket.on("START_NEXT_ROUND", () => {
+    const room = findRoomByPlayerId(socket.id);
+    if (!room) return;
+    if (room.hostId !== socket.id) return;
+    const game = games.get(room.code);
+    if (!game || game.phase !== "round_over") return;
+
+    startNextRound(game);
+    broadcastGameState(room.code, room.hostId);
+    console.log(`Next round started in room ${room.code}`);
+  });
+
   // ─── DISCONNECT ───
   socket.on("disconnect", () => {
     const result = removePlayer(socket.id);
-    if (result) {
-      const { room } = result;
-      io.to(room.code).emit("PLAYER_LEFT", { playerId: socket.id });
+    if (!result) return;
 
-      if (room.players.length > 0) {
-        io.to(room.code).emit("GAME_STATE", { gameState: lobbyState(room) });
+    const { room, midGame } = result;
+
+    if (midGame) {
+      // Mid-game: mark disconnected in game engine, broadcast updated state
+      const game = games.get(room.code);
+      if (game) {
+        game.connectedPlayers.delete(socket.id);
+        broadcastGameState(room.code, room.hostId);
       }
-
-      console.log(`Player ${socket.id} left room ${room.code}`);
+      console.log(
+        `Player ${socket.id} disconnected mid-game from room ${room.code}`,
+      );
+      return;
     }
+
+    // Room was deleted (all disconnected mid-game or lobby empty) — clean up game
+    games.delete(room.code);
+
+    // Lobby: fully removed
+    io.to(room.code).emit("PLAYER_LEFT", { playerId: socket.id });
+
+    if (room.players.length > 0) {
+      io.to(room.code).emit("GAME_STATE", { gameState: lobbyState(room) });
+    }
+
+    console.log(`Player ${socket.id} left room ${room.code}`);
   });
 });
 
 const PORT = 3001;
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://localhost:${PORT}`);
+
+  // Print LAN IP so other devices on the same WiFi can connect
+  const nets = networkInterfaces();
+  for (const addrs of Object.values(nets)) {
+    if (!addrs) continue;
+    for (const addr of addrs) {
+      if (addr.family === "IPv4" && !addr.internal) {
+        console.log(`  LAN: http://${addr.address}:${PORT}`);
+      }
+    }
+  }
 });

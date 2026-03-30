@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 import { Toaster, toast } from "sonner";
 import "./App.css";
 import { GameScreen } from "./screens/GameScreen.js";
+import { ScoreScreen } from "./screens/ScoreScreen.js";
 import { SERVER_URL, socket } from "./socket.js";
+import { playUnoSound } from "./sounds.js";
 import { styles } from "./styles.js";
 
 function getHash() {
@@ -97,6 +99,23 @@ function App() {
       toast("FLIP! All cards flipped!");
     });
 
+    socket.on("UNO_CALLED", ({ playerName, playerId }) => {
+      playUnoSound();
+      if (playerId === socket.id) {
+        toast.success("You called UNO!");
+      } else {
+        toast(`${playerName} called UNO!`);
+      }
+    });
+
+    socket.on("UNO_CAUGHT", ({ targetName, targetId }) => {
+      if (targetId === socket.id) {
+        toast.error("You were caught! Draw 2 cards");
+      } else {
+        toast(`${targetName} was caught! +2 cards`);
+      }
+    });
+
     socket.on("CHALLENGE_RESULT", ({ success, penaltyCards }) => {
       if (success) {
         toast.success(
@@ -131,12 +150,27 @@ function App() {
       socket.off("HAND_UPDATE");
       socket.off("CARD_PLAYED");
       socket.off("FLIP_EVENT");
+      socket.off("UNO_CALLED");
+      socket.off("UNO_CAUGHT");
       socket.off("CHALLENGE_RESULT");
       socket.off("ROUND_OVER");
       socket.off("GAME_OVER");
       socket.off("ERROR");
     };
   }, [players]);
+
+  // ─── SCORE SCREEN ───
+  if (
+    gameState &&
+    (gameState.phase === "round_over" || gameState.phase === "game_over")
+  ) {
+    return (
+      <>
+        <Toaster position="top-center" theme="dark" />
+        <ScoreScreen gameState={gameState} />
+      </>
+    );
+  }
 
   // ─── GAME SCREEN ───
   if (

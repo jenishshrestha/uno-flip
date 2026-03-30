@@ -35,6 +35,7 @@ export interface GameInstance {
   discardTopSide: CardSide | null;
   calledUno: Set<string>;
   cumulativeScores: Map<string, number>;
+  connectedPlayers: Set<string>; // tracks who is currently connected
   // Challenge state
   challengeTarget: string | null; // player who can challenge
   challengedPlayerId: string | null; // player who played the wild draw
@@ -59,6 +60,7 @@ export function createGame(
     discardTopSide: null,
     calledUno: new Set(),
     cumulativeScores: new Map(players.map((p) => [p.id, 0])),
+    connectedPlayers: new Set(players.map((p) => p.id)),
     challengeTarget: null,
     challengedPlayerId: null,
     pendingDrawAction: null,
@@ -96,9 +98,9 @@ function flipStartingCard(game: GameInstance): void {
     // Shuffle draw pile
     for (let i = game.deck.drawPile.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      const temp = game.deck.drawPile[i];
-      game.deck.drawPile[i] = game.deck.drawPile[j] as typeof temp;
-      game.deck.drawPile[j] = temp as typeof temp;
+      const temp = game.deck.drawPile[i] as Card;
+      game.deck.drawPile[i] = game.deck.drawPile[j] as Card;
+      game.deck.drawPile[j] = temp;
     }
     flipStartingCard(game);
     return;
@@ -545,9 +547,10 @@ export function challengeDraw(
 }
 
 // ─── Call UNO ───
+// Player can call UNO when they have 1 or 2 cards (before or after playing)
 export function callUno(game: GameInstance, playerId: string): boolean {
   const hand = game.hands.get(playerId);
-  if (!hand || hand.length !== 1) return false;
+  if (!hand || hand.length > 2 || hand.length === 0) return false;
   game.calledUno.add(playerId);
   return true;
 }
@@ -670,7 +673,7 @@ export function getPublicGameState(
     name: game.playerNames.get(id) ?? "Unknown",
     cardCount: game.hands.get(id)?.length ?? 0,
     isUno: game.calledUno.has(id),
-    connected: true,
+    connected: game.connectedPlayers.has(id),
   }));
 
   return {
@@ -684,10 +687,70 @@ export function getPublicGameState(
     hostId,
     chosenColor: game.chosenColor,
     challengeTarget: game.challengeTarget,
+    scores: Object.fromEntries(game.cumulativeScores),
   };
 }
 
 // ─── Get a player's hand ───
 export function getPlayerHand(game: GameInstance, playerId: string): Card[] {
   return game.hands.get(playerId) ?? [];
+}
+
+// ─── Reconnect a player with a new socket ID ───
+export function reconnectPlayer(
+  game: GameInstance,
+  oldId: string,
+  newId: string,
+): void {
+  const idx = game.playerIds.indexOf(oldId);
+  if (idx !== -1) game.playerIds[idx] = newId;
+
+  const name = game.playerNames.get(oldId);
+  if (name !== undefined) {
+    game.playerNames.delete(oldId);
+    game.playerNames.set(newId, name);
+  }
+
+  const hand = game.hands.get(oldId);
+  if (hand !== undefined) {
+    game.hands.delete(oldId);
+    game.hands.set(newId, hand);
+  }
+
+  const score = game.cumulativeScores.get(oldId);
+  if (score !== undefined) {
+    game.cumulativeScores.delete(oldId);
+    game.cumulativeScores.set(newId, score);
+  }
+
+  if (game.calledUno.has(oldId)) {
+    game.calledUno.delete(oldId);
+    game.calledUno.add(newId);
+  }
+
+  game.connectedPlayers.delete(oldId);
+  game.connectedPlayers.add(newId);
+
+  if (game.challengeTarget === oldId) game.challengeTarget = newId;
+  if (game.challengedPlayerId === oldId) game.challengedPlayerId = newId;
+}
+
+// ─── Start the next round (keeps cumulative scores) ───
+export function startNextRound(game: GameInstance): void {
+  const savedScores = new Map(game.cumulativeScores);
+  const savedConnected = new Set(game.connectedPlayers);
+  const savedNames = new Map(game.playerNames);
+  const playerIds = [...game.playerIds];
+
+  // Re-create fresh game state
+  const fresh = createGame(
+    playerIds.map((id) => ({ id, name: savedNames.get(id) ?? "Unknown" })),
+  );
+
+  // Copy fresh state into the existing instance (so callers keep the same ref)
+  Object.assign(game, fresh);
+
+  // Restore cumulative scores and connection state
+  game.cumulativeScores = savedScores;
+  game.connectedPlayers = savedConnected;
 }
