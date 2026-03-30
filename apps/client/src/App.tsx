@@ -97,6 +97,16 @@ function App() {
       toast("FLIP! All cards flipped!");
     });
 
+    socket.on("CHALLENGE_RESULT", ({ success, penaltyCards }) => {
+      if (success) {
+        toast.success(
+          `Challenge succeeded! Offender draws ${penaltyCards} cards`,
+        );
+      } else {
+        toast.error(`Challenge failed! Challenger draws ${penaltyCards} cards`);
+      }
+    });
+
     socket.on("ROUND_OVER", ({ winnerId }) => {
       const name = players.find((p) => p.id === winnerId)?.name ?? "Someone";
       toast.success(`${name} won the round!`);
@@ -121,6 +131,7 @@ function App() {
       socket.off("HAND_UPDATE");
       socket.off("CARD_PLAYED");
       socket.off("FLIP_EVENT");
+      socket.off("CHALLENGE_RESULT");
       socket.off("ROUND_OVER");
       socket.off("GAME_OVER");
       socket.off("ERROR");
@@ -128,7 +139,12 @@ function App() {
   }, [players]);
 
   // ─── GAME SCREEN ───
-  if (gameState && gameState.phase !== "lobby" && hand) {
+  if (
+    gameState &&
+    gameState.phase !== "lobby" &&
+    gameState.phase !== "dealing" &&
+    hand
+  ) {
     return (
       <>
         <Toaster position="top-center" theme="dark" />

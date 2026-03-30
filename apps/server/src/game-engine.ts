@@ -2,6 +2,7 @@ import type {
   ActiveSide,
   Card,
   CardSide,
+  CardValue,
   Direction,
   GamePhase,
   GameState,
@@ -15,29 +16,32 @@ import {
   dealCards,
   discard,
   drawCard,
-  flipStartingCard,
   getDiscardTop,
 } from "./deck.js";
 import { calculateRoundScores, totalWinnerPoints } from "./scoring.js";
 import { canPlayCard } from "./validators.js";
 
-// ─── Internal game state (server only — never sent to clients directly) ───
+// ─── Internal game state (server only) ───
 export interface GameInstance {
   phase: GamePhase;
   activeSide: ActiveSide;
   direction: Direction;
   currentPlayerIndex: number;
-  playerIds: string[]; // ordered list of player IDs
+  playerIds: string[];
   playerNames: Map<string, string>;
-  hands: Map<string, Card[]>; // each player's cards
+  hands: Map<string, Card[]>;
   deck: DeckState;
-  chosenColor: string | null; // color picked after a wild
+  chosenColor: string | null;
   discardTopSide: CardSide | null;
-  calledUno: Set<string>; // players who called UNO
-  cumulativeScores: Map<string, number>; // total scores across rounds
+  calledUno: Set<string>;
+  cumulativeScores: Map<string, number>;
+  // Challenge state
+  challengeTarget: string | null; // player who can challenge
+  challengedPlayerId: string | null; // player who played the wild draw
+  pendingDrawAction: CardValue | null; // the wild draw card value being challenged
 }
 
-// ─── Create a new game from a list of players ───
+// ─── Create a new game ───
 export function createGame(
   players: { id: string; name: string }[],
 ): GameInstance {
@@ -54,34 +58,36 @@ export function createGame(
     discardTopSide: null,
     calledUno: new Set(),
     cumulativeScores: new Map(players.map((p) => [p.id, 0])),
+    challengeTarget: null,
+    challengedPlayerId: null,
+    pendingDrawAction: null,
   };
 
-  // Deal cards
+  // Deal 7 cards to each player
   game.hands = dealCards(
     game.deck,
     game.playerIds,
     GAME_RULES.CARDS_PER_PLAYER,
   );
 
-  // Flip the starting card
-  game.discardTopSide = flipStartingCard(game.deck);
-
-  // Handle if starting card is an action
-  if (game.discardTopSide) {
-    handleStartingCard(game);
-  }
-
+  // Flip starting card and handle special starting cards
+  flipStartingCard(game);
   game.phase = "playing";
   return game;
 }
 
-// ─── Handle edge cases when the starting card is an action ───
-function handleStartingCard(game: GameInstance): void {
-  if (!game.discardTopSide) return;
-  const value = game.discardTopSide.value;
+// ─── Flip the starting card with official rules for action/wild starters ───
+function flipStartingCard(game: GameInstance): void {
+  const card = game.deck.drawPile.pop();
+  if (!card) return;
 
-  // If starting card is a wild draw — reshuffle and try again
+  game.deck.discardPile.push(card);
+  game.discardTopSide = card.light; // always starts on light side
+  const value = card.light.value;
+
+  // Handle starting card rules per official UNO Flip rules
   if (value === "wild_draw_two" || value === "wild_draw_color") {
+    // Wild Draw Two as first card: reshuffle and try again
     game.deck.discardPile = [];
     game.deck = createDeck();
     game.hands = dealCards(
@@ -89,27 +95,47 @@ function handleStartingCard(game: GameInstance): void {
       game.playerIds,
       GAME_RULES.CARDS_PER_PLAYER,
     );
-    game.discardTopSide = flipStartingCard(game.deck);
-    if (game.discardTopSide) {
-      handleStartingCard(game); // recurse if another bad card
-    }
+    flipStartingCard(game);
     return;
   }
 
-  const action = resolveAction(value, game.activeSide);
-  if (action.reverse) {
-    game.direction =
-      game.direction === "clockwise" ? "counter_clockwise" : "clockwise";
+  if (value === "wild") {
+    // Wild: first player chooses a color (handled by setting phase)
+    // For simplicity, we let the first player choose on their turn
+    return;
   }
-  if (action.skip) {
+
+  if (value === "skip" || value === "skip_everyone") {
+    // Skip: first player is skipped
     advanceTurn(game);
+    return;
   }
-  if (action.flip) {
-    flipGame(game);
+
+  if (value === "reverse") {
+    // Reverse: direction changes, dealer goes first (last player)
+    game.direction = "counter_clockwise";
+    game.currentPlayerIndex = game.playerIds.length - 1;
+    return;
+  }
+
+  if (value === "draw_one") {
+    // Draw One: first player draws 1 and loses turn
+    const firstHand = game.hands.get(
+      game.playerIds[game.currentPlayerIndex] ?? "",
+    );
+    if (firstHand) forceDrawCards(game.deck, firstHand, 1);
+    advanceTurn(game);
+    return;
+  }
+
+  if (value === "flip") {
+    // Flip: everything flips to dark side immediately
+    performFlip(game);
+    return;
   }
 }
 
-// ─── Play a card ───
+// ─── Play result ───
 export interface PlayResult {
   success: boolean;
   error?: string;
@@ -117,19 +143,20 @@ export interface PlayResult {
   flip?: boolean;
   cardPlayed?: CardSide;
   drawnByNext?: Card[];
-  skippedPlayerId?: string;
+  skippedPlayerIds?: string[];
   roundOver?: boolean;
   gameOver?: boolean;
   winnerId?: string;
   roundScores?: Record<string, number>;
+  awaitingChallenge?: boolean;
 }
 
+// ─── Play a card ───
 export function playCard(
   game: GameInstance,
   playerId: string,
   cardId: number,
 ): PlayResult {
-  // Validate it's this player's turn
   if (game.phase !== "playing") {
     return { success: false, error: "Not in playing phase" };
   }
@@ -137,7 +164,6 @@ export function playCard(
     return { success: false, error: "Not your turn" };
   }
 
-  // Find the card in their hand
   const hand = game.hands.get(playerId);
   if (!hand) return { success: false, error: "Player not found" };
 
@@ -157,21 +183,25 @@ export function playCard(
     return { success: false, error: "Can't play that card" };
   }
 
+  const cardFace = game.activeSide === "light" ? card.light : card.dark;
+  const action = resolveAction(cardFace.value);
+
   // Remove card from hand, place on discard
   hand.splice(cardIndex, 1);
   discard(game.deck, card);
-
-  const cardFace = game.activeSide === "light" ? card.light : card.dark;
   game.discardTopSide = cardFace;
-  game.chosenColor = null; // reset chosen color
+  game.chosenColor = null;
+
+  // Check UNO call — player going to 1 card should have called UNO
+  if (hand.length === 1) {
+    // They'll need to call UNO before the next player acts
+  }
 
   // Check if player won the round (empty hand)
   if (hand.length === 0) {
-    return handleRoundWin(game, playerId, cardFace);
+    return handleRoundWin(game, playerId, cardFace, action);
   }
 
-  // Resolve action effects
-  const action = resolveAction(cardFace.value, game.activeSide);
   const result: PlayResult = {
     success: true,
     cardPlayed: cardFace,
@@ -181,34 +211,60 @@ export function playCard(
 
   // Handle flip
   if (action.flip) {
-    flipGame(game);
+    performFlip(game);
   }
 
   // If wild card, wait for color choice before advancing
   if (action.needsColorChoice) {
     game.phase = "choosing_color";
+    // Track if this was a wild draw (for challenge after color choice)
+    if (action.isWildDraw) {
+      game.challengedPlayerId = playerId;
+      game.pendingDrawAction = cardFace.value;
+    }
     return result;
   }
 
+  // Apply non-wild action effects
+  applyActionEffects(game, action, result);
+
+  return result;
+}
+
+// ─── Apply action effects (skip, reverse, draw) after a card is played ───
+function applyActionEffects(
+  game: GameInstance,
+  action: ReturnType<typeof resolveAction>,
+  result: PlayResult,
+): void {
   // Handle reverse
   if (action.reverse) {
     game.direction =
       game.direction === "clockwise" ? "counter_clockwise" : "clockwise";
-    // In 2-player mode, reverse acts as skip
+    // 2-player: reverse acts as skip
     if (game.playerIds.length === 2) {
       action.skip = true;
     }
   }
 
-  // Advance turn
+  // Handle skip everyone (dark side) — skip ALL other players, current player goes again
+  if (action.skipEveryone) {
+    // Don't advance turn — current player goes again
+    result.skippedPlayerIds = game.playerIds.filter(
+      (id) => id !== game.playerIds[game.currentPlayerIndex],
+    );
+    return;
+  }
+
+  // Advance to next player
   advanceTurn(game);
 
-  // Handle skip + draw effects on the next player
-  if (action.skip || action.drawCards !== 0) {
+  // Handle skip + draw on the next player
+  if (action.skip || action.drawCards > 0) {
     const targetId = game.playerIds[game.currentPlayerIndex];
-    if (!targetId) return result;
+    if (!targetId) return;
     const targetHand = game.hands.get(targetId);
-    result.skippedPlayerId = targetId;
+    result.skippedPlayerIds = [targetId];
 
     if (targetHand && action.drawCards > 0) {
       result.drawnByNext = forceDrawCards(
@@ -218,13 +274,11 @@ export function playCard(
       );
     }
 
-    // Skip over the target player
+    // Skip the target player
     if (action.skip) {
       advanceTurn(game);
     }
   }
-
-  return result;
 }
 
 // ─── Player draws a card ───
@@ -232,6 +286,7 @@ export interface DrawResult {
   success: boolean;
   error?: string;
   card?: Card;
+  canPlayDrawn: boolean; // can the drawn card be played immediately?
 }
 
 export function playerDrawCard(
@@ -239,24 +294,46 @@ export function playerDrawCard(
   playerId: string,
 ): DrawResult {
   if (game.phase !== "playing") {
-    return { success: false, error: "Not in playing phase" };
+    return {
+      success: false,
+      error: "Not in playing phase",
+      canPlayDrawn: false,
+    };
   }
   if (game.playerIds[game.currentPlayerIndex] !== playerId) {
-    return { success: false, error: "Not your turn" };
+    return { success: false, error: "Not your turn", canPlayDrawn: false };
   }
 
   const hand = game.hands.get(playerId);
-  if (!hand) return { success: false, error: "Player not found" };
+  if (!hand)
+    return { success: false, error: "Player not found", canPlayDrawn: false };
 
   const card = drawCard(game.deck);
-  if (!card) return { success: false, error: "No cards to draw" };
+  if (!card)
+    return { success: false, error: "No cards to draw", canPlayDrawn: false };
 
   hand.push(card);
 
-  // After drawing, advance to next player
-  advanceTurn(game);
+  // Check if the drawn card can be played on the discard
+  const drawable = game.discardTopSide
+    ? canPlayCard(card, game.discardTopSide, game.activeSide, game.chosenColor)
+    : false;
 
-  return { success: true, card };
+  if (!drawable) {
+    // Can't play it — turn ends
+    advanceTurn(game);
+  }
+  // If drawable, DON'T advance — player can choose to play it or pass
+
+  return { success: true, card, canPlayDrawn: drawable };
+}
+
+// ─── Pass turn (after drawing a playable card but choosing not to play it) ───
+export function passTurn(game: GameInstance, playerId: string): boolean {
+  if (game.phase !== "playing") return false;
+  if (game.playerIds[game.currentPlayerIndex] !== playerId) return false;
+  advanceTurn(game);
+  return true;
 }
 
 // ─── Select color after playing a wild ───
@@ -273,47 +350,205 @@ export function selectColor(
   }
 
   game.chosenColor = color;
-  game.phase = "playing";
-
-  // Now apply the draw effect if it was a wild draw card
   const result: PlayResult = { success: true };
 
-  if (game.discardTopSide) {
-    const action = resolveAction(game.discardTopSide.value, game.activeSide);
-
+  // If this was a wild draw card, go to challenge phase
+  if (game.pendingDrawAction) {
+    game.phase = "awaiting_challenge";
     advanceTurn(game);
+    game.challengeTarget = game.playerIds[game.currentPlayerIndex] ?? null;
+    result.awaitingChallenge = true;
+    return result;
+  }
 
-    if (action.drawCards !== 0) {
-      const targetId = game.playerIds[game.currentPlayerIndex];
-      if (!targetId) return result;
-      const targetHand = game.hands.get(targetId);
-      result.skippedPlayerId = targetId;
+  // Plain wild — just advance turn
+  game.phase = "playing";
+  advanceTurn(game);
 
-      if (targetHand) {
-        if (action.drawCards === -1) {
-          // Wild Draw Color — draw until they get the chosen color
-          result.drawnByNext = drawUntilColor(
-            game.deck,
-            targetHand,
-            color,
-            game.activeSide,
-          );
-        } else {
-          result.drawnByNext = forceDrawCards(
-            game.deck,
-            targetHand,
-            action.drawCards,
-          );
-        }
-      }
+  return result;
+}
 
-      if (action.skip) {
-        advanceTurn(game);
+// ─── Target accepts the draw penalty (no challenge) ───
+export function acceptDraw(game: GameInstance, playerId: string): PlayResult {
+  if (game.phase !== "awaiting_challenge") {
+    return { success: false, error: "Not awaiting challenge" };
+  }
+  if (game.challengeTarget !== playerId) {
+    return { success: false, error: "Not the challenge target" };
+  }
+
+  const result: PlayResult = { success: true };
+  const targetHand = game.hands.get(playerId);
+  if (!targetHand) return { success: false, error: "Player not found" };
+
+  // Apply the draw penalty
+  const action = resolveAction(game.pendingDrawAction ?? "wild");
+  if (action.drawCards === -1) {
+    // Wild Draw Color — draw until chosen color
+    result.drawnByNext = drawUntilColor(
+      game.deck,
+      targetHand,
+      game.chosenColor ?? "",
+      game.activeSide,
+    );
+  } else if (action.drawCards > 0) {
+    result.drawnByNext = forceDrawCards(
+      game.deck,
+      targetHand,
+      action.drawCards,
+    );
+  }
+
+  result.skippedPlayerIds = [playerId];
+
+  // Clear challenge state and skip target
+  clearChallengeState(game);
+  game.phase = "playing";
+  advanceTurn(game);
+
+  return result;
+}
+
+// ─── Target challenges the wild draw ───
+export interface ChallengeResult {
+  success: boolean;
+  error?: string;
+  challengeSuccess: boolean; // did the challenger catch an illegal play?
+  penaltyPlayerId: string;
+  penaltyCards: number;
+}
+
+export function challengeDraw(
+  game: GameInstance,
+  playerId: string,
+): ChallengeResult {
+  if (game.phase !== "awaiting_challenge") {
+    return {
+      success: false,
+      error: "Not awaiting challenge",
+      challengeSuccess: false,
+      penaltyPlayerId: "",
+      penaltyCards: 0,
+    };
+  }
+  if (game.challengeTarget !== playerId) {
+    return {
+      success: false,
+      error: "Not the challenge target",
+      challengeSuccess: false,
+      penaltyPlayerId: "",
+      penaltyCards: 0,
+    };
+  }
+
+  const challengedId = game.challengedPlayerId ?? "";
+  const challengedHand = game.hands.get(challengedId);
+  const challengerHand = game.hands.get(playerId);
+
+  if (!challengedHand || !challengerHand) {
+    return {
+      success: false,
+      error: "Player not found",
+      challengeSuccess: false,
+      penaltyPlayerId: "",
+      penaltyCards: 0,
+    };
+  }
+
+  // Check if the wild draw was legally played
+  // The challenged player's hand NOW doesn't have the wild draw card (it was played).
+  // We check if they had any card matching the PREVIOUS discard color.
+  // Since the wild draw is now on top, we need the color that was active BEFORE.
+  // The chosenColor is the new color, but we need the old active color.
+  // We can check: did the challenged player have a card matching the old discard color?
+  // The old color is tricky — let's check against the current discard pile (2nd from top).
+  // Check the color from BEFORE the wild was played.
+  // The discard pile's second-to-last card has the old color.
+  const discardPile = game.deck.discardPile;
+  const previousCard =
+    discardPile.length >= 2 ? discardPile[discardPile.length - 2] : null;
+  const previousColor = previousCard
+    ? game.activeSide === "light"
+      ? previousCard.light.color
+      : previousCard.dark.color
+    : null;
+
+  // Check if challenged player has a card matching the PREVIOUS active color
+  let hadMatchingColor = false;
+  if (previousColor && previousColor !== "wild") {
+    for (const card of challengedHand) {
+      const face = game.activeSide === "light" ? card.light : card.dark;
+      if (face.color === previousColor) {
+        hadMatchingColor = true;
+        break;
       }
     }
   }
 
-  return result;
+  const challengeSuccess = hadMatchingColor; // they had a matching color = illegal play
+
+  if (challengeSuccess) {
+    // Challenge succeeded — challenged player takes the penalty
+    const action = resolveAction(game.pendingDrawAction ?? "wild");
+    let penaltyCards = 0;
+
+    if (action.drawCards === -1) {
+      const drawn = drawUntilColor(
+        game.deck,
+        challengedHand,
+        game.chosenColor ?? "",
+        game.activeSide,
+      );
+      penaltyCards = drawn.length;
+    } else {
+      forceDrawCards(game.deck, challengedHand, action.drawCards);
+      penaltyCards = action.drawCards;
+    }
+
+    clearChallengeState(game);
+    game.phase = "playing";
+    // Challenger plays normally (don't skip them)
+
+    return {
+      success: true,
+      challengeSuccess: true,
+      penaltyPlayerId: challengedId,
+      penaltyCards,
+    };
+  }
+
+  // Challenge failed — challenger draws penalty + 2 extra
+  const action = resolveAction(game.pendingDrawAction ?? "wild");
+  let penaltyCards = 0;
+
+  if (action.drawCards === -1) {
+    const drawn = drawUntilColor(
+      game.deck,
+      challengerHand,
+      game.chosenColor ?? "",
+      game.activeSide,
+    );
+    penaltyCards = drawn.length;
+  } else {
+    forceDrawCards(game.deck, challengerHand, action.drawCards);
+    penaltyCards = action.drawCards;
+  }
+
+  // Plus 2 extra penalty cards
+  forceDrawCards(game.deck, challengerHand, GAME_RULES.CHALLENGE_PENALTY_EXTRA);
+  penaltyCards += GAME_RULES.CHALLENGE_PENALTY_EXTRA;
+
+  clearChallengeState(game);
+  game.phase = "playing";
+  // Challenger loses their turn — advance past them
+  advanceTurn(game);
+
+  return {
+    success: true,
+    challengeSuccess: false,
+    penaltyPlayerId: playerId,
+    penaltyCards,
+  };
 }
 
 // ─── Call UNO ───
@@ -339,11 +574,13 @@ export function catchUno(
   return forceDrawCards(game.deck, targetHand, 2);
 }
 
-// ─── Flip the game (light ↔ dark) ───
-function flipGame(game: GameInstance): void {
+// ─── Perform the Flip mechanic ───
+// Official rules: entire discard pile flips, draw pile flips, all hands flip
+function performFlip(game: GameInstance): void {
   game.activeSide = game.activeSide === "light" ? "dark" : "light";
 
-  // Update the discard top to show the new active side
+  // The discard pile flips — the Flip card goes to the bottom,
+  // and the new top card (other side) becomes the active discard
   const topCard = getDiscardTop(game.deck);
   if (topCard) {
     game.discardTopSide =
@@ -359,12 +596,47 @@ function advanceTurn(game: GameInstance): void {
     game.playerIds.length;
 }
 
-// ─── Handle a round win ───
+// ─── Clear challenge state ───
+function clearChallengeState(game: GameInstance): void {
+  game.challengeTarget = null;
+  game.challengedPlayerId = null;
+  game.pendingDrawAction = null;
+}
+
+// ─── Handle round win ───
 function handleRoundWin(
   game: GameInstance,
   winnerId: string,
   cardPlayed: CardSide,
+  action: ReturnType<typeof resolveAction>,
 ): PlayResult {
+  // Last card action effects still apply
+  const result: PlayResult = {
+    success: true,
+    cardPlayed,
+    roundOver: true,
+    winnerId,
+  };
+
+  // Apply last card effects (draw, skip, etc.) before scoring
+  if (action.drawCards > 0 || action.skip || action.skipEveryone) {
+    advanceTurn(game);
+    const targetId = game.playerIds[game.currentPlayerIndex];
+    const targetHand = targetId ? game.hands.get(targetId) : undefined;
+
+    if (targetHand && action.drawCards > 0) {
+      forceDrawCards(game.deck, targetHand, action.drawCards);
+    }
+  }
+
+  // If last card is a wild draw, effects apply but no challenge
+  // (round ends immediately after effects)
+
+  // If last card is a flip, flip before scoring
+  if (action.flip) {
+    performFlip(game);
+  }
+
   game.phase = "round_over";
 
   const roundScores = calculateRoundScores(
@@ -372,30 +644,23 @@ function handleRoundWin(
     winnerId,
     game.activeSide,
   );
+  result.roundScores = roundScores;
   const winnerPoints = totalWinnerPoints(roundScores);
 
-  // Update cumulative scores
   const currentScore = game.cumulativeScores.get(winnerId) ?? 0;
   game.cumulativeScores.set(winnerId, currentScore + winnerPoints);
 
-  // Check if game is over (500 points)
   const gameOver =
     (game.cumulativeScores.get(winnerId) ?? 0) >= GAME_RULES.WIN_SCORE;
   if (gameOver) {
     game.phase = "game_over";
+    result.gameOver = true;
   }
 
-  return {
-    success: true,
-    cardPlayed,
-    roundOver: true,
-    gameOver,
-    winnerId,
-    roundScores,
-  };
+  return result;
 }
 
-// ─── Get the public game state (safe to send to all clients) ───
+// ─── Get the public game state ───
 export function getPublicGameState(
   game: GameInstance,
   hostId: string,
@@ -418,10 +683,11 @@ export function getPublicGameState(
     drawPileCount: game.deck.drawPile.length,
     hostId,
     chosenColor: game.chosenColor,
+    challengeTarget: game.challengeTarget,
   };
 }
 
-// ─── Get a player's hand (private — only sent to them) ───
+// ─── Get a player's hand ───
 export function getPlayerHand(game: GameInstance, playerId: string): Card[] {
   return game.hands.get(playerId) ?? [];
 }

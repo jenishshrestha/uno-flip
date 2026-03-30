@@ -13,6 +13,7 @@ export type GamePhase =
   | "dealing"
   | "playing"
   | "choosing_color"
+  | "awaiting_challenge" // after wild draw two/color, target can accept or challenge
   | "round_over"
   | "game_over";
 
@@ -39,6 +40,7 @@ export interface GameState {
   drawPileCount: number; // how many cards left to draw
   hostId: string; // socket ID of the host
   chosenColor: string | null; // color chosen after a wild card
+  challengeTarget: string | null; // player ID who can challenge a wild draw
 }
 
 // ─── Private info sent only to the owning player ───
