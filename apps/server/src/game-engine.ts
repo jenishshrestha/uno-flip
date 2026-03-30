@@ -19,7 +19,7 @@ import {
   getDiscardTop,
 } from "./deck.js";
 import { calculateRoundScores, totalWinnerPoints } from "./scoring.js";
-import { canPlayCard } from "./validators.js";
+import { canPlayCard, isWildDrawLegal } from "./validators.js";
 
 // ─── Internal game state (server only) ───
 export interface GameInstance {
@@ -39,6 +39,7 @@ export interface GameInstance {
   challengeTarget: string | null; // player who can challenge
   challengedPlayerId: string | null; // player who played the wild draw
   pendingDrawAction: CardValue | null; // the wild draw card value being challenged
+  wildDrawWasLegal: boolean; // was the wild draw played legally? (for challenge resolution)
 }
 
 // ─── Create a new game ───
@@ -61,6 +62,7 @@ export function createGame(
     challengeTarget: null,
     challengedPlayerId: null,
     pendingDrawAction: null,
+    wildDrawWasLegal: true,
   };
 
   // Deal 7 cards to each player
@@ -87,14 +89,17 @@ function flipStartingCard(game: GameInstance): void {
 
   // Handle starting card rules per official UNO Flip rules
   if (value === "wild_draw_two" || value === "wild_draw_color") {
-    // Wild Draw Two as first card: reshuffle and try again
-    game.deck.discardPile = [];
-    game.deck = createDeck();
-    game.hands = dealCards(
-      game.deck,
-      game.playerIds,
-      GAME_RULES.CARDS_PER_PLAYER,
-    );
+    // Official rule: return it to the draw pile, reshuffle, flip a new card.
+    // Keep the already-dealt hands intact.
+    game.deck.discardPile.pop();
+    game.deck.drawPile.push(card);
+    // Shuffle draw pile
+    for (let i = game.deck.drawPile.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = game.deck.drawPile[i];
+      game.deck.drawPile[i] = game.deck.drawPile[j] as typeof temp;
+      game.deck.drawPile[j] = temp as typeof temp;
+    }
     flipStartingCard(game);
     return;
   }
@@ -112,9 +117,14 @@ function flipStartingCard(game: GameInstance): void {
   }
 
   if (value === "reverse") {
-    // Reverse: direction changes, dealer goes first (last player)
-    game.direction = "counter_clockwise";
-    game.currentPlayerIndex = game.playerIds.length - 1;
+    if (game.playerIds.length === 2) {
+      // 2-player: Reverse acts as Skip — first player is skipped
+      advanceTurn(game);
+    } else {
+      // 3+ players: direction changes, dealer (last player) goes first
+      game.direction = "counter_clockwise";
+      game.currentPlayerIndex = game.playerIds.length - 1;
+    }
     return;
   }
 
@@ -185,6 +195,17 @@ export function playCard(
 
   const cardFace = game.activeSide === "light" ? card.light : card.dark;
   const action = resolveAction(cardFace.value);
+
+  // Track wild draw legality BEFORE removing the card from hand
+  // (the card is still in hand, so isWildDrawLegal checks correctly)
+  if (action.isWildDraw) {
+    game.wildDrawWasLegal = isWildDrawLegal(
+      hand,
+      game.discardTopSide ?? cardFace,
+      game.activeSide,
+      game.chosenColor,
+    );
+  }
 
   // Remove card from hand, place on discard
   hand.splice(cardIndex, 1);
@@ -455,37 +476,9 @@ export function challengeDraw(
     };
   }
 
-  // Check if the wild draw was legally played
-  // The challenged player's hand NOW doesn't have the wild draw card (it was played).
-  // We check if they had any card matching the PREVIOUS discard color.
-  // Since the wild draw is now on top, we need the color that was active BEFORE.
-  // The chosenColor is the new color, but we need the old active color.
-  // We can check: did the challenged player have a card matching the old discard color?
-  // The old color is tricky — let's check against the current discard pile (2nd from top).
-  // Check the color from BEFORE the wild was played.
-  // The discard pile's second-to-last card has the old color.
-  const discardPile = game.deck.discardPile;
-  const previousCard =
-    discardPile.length >= 2 ? discardPile[discardPile.length - 2] : null;
-  const previousColor = previousCard
-    ? game.activeSide === "light"
-      ? previousCard.light.color
-      : previousCard.dark.color
-    : null;
-
-  // Check if challenged player has a card matching the PREVIOUS active color
-  let hadMatchingColor = false;
-  if (previousColor && previousColor !== "wild") {
-    for (const card of challengedHand) {
-      const face = game.activeSide === "light" ? card.light : card.dark;
-      if (face.color === previousColor) {
-        hadMatchingColor = true;
-        break;
-      }
-    }
-  }
-
-  const challengeSuccess = hadMatchingColor; // they had a matching color = illegal play
+  // Was the wild draw legal? We checked this BEFORE the card was removed from hand
+  // (stored in game.wildDrawWasLegal during playCard)
+  const challengeSuccess = !game.wildDrawWasLegal; // illegal play = challenge succeeds
 
   if (challengeSuccess) {
     // Challenge succeeded — challenged player takes the penalty
@@ -579,8 +572,14 @@ export function catchUno(
 function performFlip(game: GameInstance): void {
   game.activeSide = game.activeSide === "light" ? "dark" : "light";
 
-  // The discard pile flips — the Flip card goes to the bottom,
-  // and the new top card (other side) becomes the active discard
+  // Official rule: entire discard pile reverses.
+  // The Flip card (just played) goes to the BOTTOM,
+  // the previous bottom card becomes the new top.
+  game.deck.discardPile.reverse();
+
+  // Draw pile also flips (just switch which side we read — already handled by activeSide)
+
+  // Update the discard top to the new side of the new top card
   const topCard = getDiscardTop(game.deck);
   if (topCard) {
     game.discardTopSide =
@@ -601,6 +600,7 @@ function clearChallengeState(game: GameInstance): void {
   game.challengeTarget = null;
   game.challengedPlayerId = null;
   game.pendingDrawAction = null;
+  game.wildDrawWasLegal = true;
 }
 
 // ─── Handle round win ───
