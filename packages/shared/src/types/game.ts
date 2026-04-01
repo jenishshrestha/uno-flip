@@ -41,6 +41,7 @@ export interface GameState {
   hostId: string; // socket ID of the host
   chosenColor: string | null; // color chosen after a wild card
   challengeTarget: string | null; // player ID who can challenge a wild draw
+  scores: Record<string, number>; // cumulative scores (playerId → points)
 }
 
 // ─── Private info sent only to the owning player ───

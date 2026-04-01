@@ -85,28 +85,76 @@ export function findRoomByPlayerId(playerId: string): Room | undefined {
 }
 
 // ─── Remove a player from their room ───
+// Mid-game: marks disconnected (can rejoin). Lobby: fully removes.
 export function removePlayer(
   playerId: string,
-): { room: Room; wasHost: boolean } | undefined {
+): { room: Room; wasHost: boolean; midGame: boolean } | undefined {
   const room = findRoomByPlayerId(playerId);
   if (!room) return undefined;
 
   const wasHost = room.hostId === playerId;
-  room.players = room.players.filter((p) => p.id !== playerId);
 
-  // If room is empty, delete it
-  if (room.players.length === 0) {
-    rooms.delete(room.code);
-    return { room, wasHost };
+  if (room.gameStarted) {
+    // Mid-game: mark disconnected, keep them for reconnection
+    const player = room.players.find((p) => p.id === playerId);
+    if (player) player.connected = false;
+
+    // If everyone disconnected, delete the room
+    const anyoneConnected = room.players.some((p) => p.connected);
+    if (!anyoneConnected) {
+      rooms.delete(room.code);
+      return { room, wasHost, midGame: false };
+    }
+
+    if (wasHost) {
+      const newHost = room.players.find(
+        (p) => p.connected && p.id !== playerId,
+      );
+      if (newHost) room.hostId = newHost.id;
+    }
+
+    return { room, wasHost, midGame: true };
   }
 
-  // If the host left, assign a new host
+  // Lobby: fully remove
+  room.players = room.players.filter((p) => p.id !== playerId);
+
+  if (room.players.length === 0) {
+    rooms.delete(room.code);
+    return { room, wasHost, midGame: false };
+  }
+
   const newHost = room.players[0];
   if (wasHost && newHost) {
     room.hostId = newHost.id;
   }
 
-  return { room, wasHost };
+  return { room, wasHost, midGame: false };
+}
+
+// ─── Reconnect a player who refreshed mid-game ───
+export function rejoinRoom(
+  roomCode: string,
+  newSocketId: string,
+  playerName: string,
+): { room: Room; oldSocketId: string } | null {
+  const room = rooms.get(roomCode);
+  if (!room?.gameStarted) return null;
+
+  const player = room.players.find(
+    (p) => p.name === playerName && !p.connected,
+  );
+  if (!player) return null;
+
+  const oldSocketId = player.id;
+  player.id = newSocketId;
+  player.connected = true;
+
+  if (room.hostId === oldSocketId) {
+    room.hostId = newSocketId;
+  }
+
+  return { room, oldSocketId };
 }
 
 // ─── Get a room by code ───
@@ -115,7 +163,9 @@ export function getRoom(code: string): Room | undefined {
 }
 
 // ─── Get public player list for a room ───
-export function getPublicPlayers(room: Room) {
+export function getPublicPlayers(room: {
+  players: { id: string; name: string; connected: boolean }[];
+}) {
   return room.players.map((p) => ({
     id: p.id,
     name: p.name,
