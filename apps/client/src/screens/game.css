@@ -1,0 +1,204 @@
+/* ─── Game Table ─── */
+.game-table {
+  width: 100%;
+  min-height: 100svh;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  grid-template-areas:
+    "opponents"
+    "center"
+    "info"
+    "hand";
+  background: radial-gradient(
+    ellipse at 50% 40%,
+    #1a6b3c 0%,
+    #0d4d2b 50%,
+    #0a3d22 100%
+  );
+  font-family: system-ui, -apple-system, sans-serif;
+  padding: 8px;
+  gap: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ─── Opponent area ─── */
+.opponents-zone {
+  grid-area: opponents;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.opponent-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.opponent-name {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  text-align: center;
+}
+
+.opponent-name.is-current {
+  color: #ffd700;
+  font-weight: bold;
+  text-shadow: 0 0 8px rgba(255, 215, 0, 0.4);
+}
+
+.opponent-cards {
+  display: flex;
+  justify-content: center;
+}
+
+/* ─── Center zone (deck + discard) ─── */
+.center-zone {
+  grid-area: center;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 28px;
+}
+
+/* ─── Info zone (turn, buttons) ─── */
+.info-zone {
+  grid-area: info;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+/* ─── Player hand zone ─── */
+.hand-zone {
+  grid-area: hand;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  padding: 8px 0 12px;
+  min-height: 120px;
+  perspective: 800px;
+}
+
+/* ─── 3D Card ─── */
+.card-3d {
+  width: 56px;
+  height: 84px;
+  perspective: 600px;
+  flex-shrink: 0;
+}
+
+.card-3d-inner {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.5s ease;
+}
+
+.card-3d-inner.flipped {
+  transform: rotateY(180deg);
+}
+
+.card-3d-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  color: white;
+  box-sizing: border-box;
+}
+
+/* Front face */
+.card-3d-front {
+  font-size: 15px;
+}
+
+/* Back face — UNO card back pattern */
+.card-3d-back {
+  transform: rotateY(180deg);
+  background: linear-gradient(135deg, #1a1a2e 0%, #2d1b4e 100%);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.card-3d-back::after {
+  content: "UNO";
+  position: absolute;
+  font-size: 11px;
+  font-weight: 900;
+  color: rgba(255, 255, 255, 0.15);
+  transform: rotate(-30deg);
+  letter-spacing: 2px;
+}
+
+/* ─── Mini card (opponent hands) ─── */
+.card-mini {
+  width: 28px;
+  height: 40px;
+  background: linear-gradient(135deg, #1a1a2e, #2d1b4e);
+  border: 1.5px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  margin-left: -12px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  position: relative;
+}
+
+.card-mini:first-child {
+  margin-left: 0;
+}
+
+.card-mini::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}
+
+/* ─── Deck pile visual ─── */
+.deck-stack {
+  position: relative;
+  width: 62px;
+  height: 90px;
+}
+
+.deck-stack-card {
+  position: absolute;
+  width: 62px;
+  height: 90px;
+  background: linear-gradient(135deg, #1a1a2e, #2d1b4e);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-radius: 7px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* ─── Flip keyframe for dealing ─── */
+@keyframes deal-flip {
+  0% {
+    transform: rotateY(180deg) translateZ(0);
+  }
+  50% {
+    transform: rotateY(90deg) translateZ(30px);
+  }
+  100% {
+    transform: rotateY(0deg) translateZ(0);
+  }
+}
+
+.card-dealing .card-3d-inner {
+  animation: deal-flip 0.4s ease-in-out forwards;
+}

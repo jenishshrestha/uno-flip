@@ -2,7 +2,7 @@ import type { GameState, PlayerHand, PublicPlayer } from "@uno-flip/shared";
 import { useEffect, useState } from "react";
 import { Toaster, toast } from "sonner";
 import "./App.css";
-import { GameScreen } from "./screens/GameScreen.js";
+import { PixiGameScreen } from "./screens/PixiGameScreen.js";
 import { ScoreScreen } from "./screens/ScoreScreen.js";
 import { SERVER_URL, socket } from "./socket.js";
 import { playUnoSound } from "./sounds.js";
@@ -182,7 +182,7 @@ function App() {
     return (
       <>
         <Toaster position="top-center" theme="dark" />
-        <GameScreen gameState={gameState} hand={hand} />
+        <PixiGameScreen gameState={gameState} hand={hand} />
       </>
     );
   }

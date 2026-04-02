@@ -10,16 +10,17 @@ import type {
 } from "@uno-flip/shared";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import { CardBack } from "../components/UnoCard.js";
 import { socket } from "../socket.js";
 import { DARK_COLORS, LIGHT_COLORS } from "../styles.js";
+import "./game.css";
 
-// ─── Get background color for a card face ───
+// ─── Helpers ───
 function getCardColor(face: CardSide, activeSide: ActiveSide): string {
   const colorMap = activeSide === "light" ? LIGHT_COLORS : DARK_COLORS;
   return colorMap[face.color] ?? "#333";
 }
 
-// ─── Format card value for display ───
 function formatValue(value: CardSide["value"]): string {
   if (typeof value === "number") return String(value);
   const labels: Record<string, string> = {
@@ -36,113 +37,90 @@ function formatValue(value: CardSide["value"]): string {
   return labels[value] ?? value;
 }
 
-// ─── Calculate fan layout for a hand of cards ───
 function getFanStyle(index: number, total: number) {
   const mid = (total - 1) / 2;
-  const maxAngle = Math.min(total * 2.5, 18); // wider fan for more cards, cap at 18°
-  const angle = (index - mid) * (maxAngle / Math.max(total - 1, 1));
-  const lift = Math.abs(index - mid) * 4; // cards at edges dip down
-  return {
-    rotate: angle,
-    translateY: lift,
-    marginLeft: index === 0 ? 0 : -12, // overlap cards
-  };
+  const maxAngle = Math.min(total * 2.5, 20);
+  const angle = total <= 1 ? 0 : (index - mid) * (maxAngle / (total - 1));
+  const lift = Math.abs(index - mid) * 3;
+  return { rotate: angle, translateY: lift };
 }
 
-// ─── Single card component ───
-function CardView({
-  card,
-  activeSide,
-  playable,
-  onClick,
-  index,
-  total,
-  isInitialDeal,
+// ─── Opponent slot — shows name + face-down cards ───
+function OpponentSlot({
+  player,
+  isCurrent,
+  canCatch,
+  onCatch,
 }: {
-  card: Card;
-  activeSide: ActiveSide;
-  playable: boolean;
-  onClick: () => void;
-  index: number;
-  total: number;
-  isInitialDeal: boolean;
+  player: PublicPlayer;
+  isCurrent: boolean;
+  canCatch: boolean;
+  onCatch: () => void;
 }) {
-  const face = activeSide === "light" ? card.light : card.dark;
-  const bg = getCardColor(face, activeSide);
-  const fan = getFanStyle(index, total);
-
   return (
     <motion.div
-      layout
-      // Deal: fly from deck area (above). Draw mid-game: slide from right.
-      initial={{
-        y: isInitialDeal ? -200 : 30,
-        x: isInitialDeal ? 0 : 80,
-        opacity: 0,
-        scale: 0.5,
-        rotate: 0,
-      }}
+      className="opponent-slot"
       animate={{
-        y: fan.translateY,
-        x: 0,
-        opacity: 1,
-        scale: 1,
-        rotate: fan.rotate,
+        scale: isCurrent ? 1.05 : 1,
       }}
-      // Play: fly up toward discard pile
-      exit={{
-        y: -180,
-        opacity: 0,
-        scale: 0.6,
-        rotate: 0,
-      }}
-      transition={{
-        type: "spring",
-        stiffness: 260,
-        damping: 24,
-        delay: isInitialDeal ? index * 0.1 : 0,
-      }}
-      style={{
-        marginLeft: fan.marginLeft,
-        transformOrigin: "bottom center",
-        zIndex: index,
-      }}
+      transition={{ type: "spring", bounce: 0.3 }}
     >
-      <motion.button
-        type="button"
-        onClick={onClick}
-        whileHover={playable ? { y: -14, scale: 1.08 } : undefined}
-        whileTap={playable ? { scale: 0.92 } : undefined}
-        style={{
-          width: 60,
-          height: 90,
-          backgroundColor: bg,
-          borderRadius: 8,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "white",
-          fontWeight: "bold",
-          fontSize: 16,
-          border: playable
-            ? "3px solid #FFD700"
-            : "2px solid rgba(255,255,255,0.2)",
-          boxShadow: playable
-            ? "0 4px 15px rgba(255,215,0,0.3)"
-            : "0 2px 8px rgba(0,0,0,0.3)",
-          flexShrink: 0,
-          cursor: playable ? "pointer" : "default",
-          opacity: playable ? 1 : 0.55,
-          padding: 0,
-        }}
-      >
-        {formatValue(face.value)}
-      </motion.button>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span
+          className={`opponent-name ${isCurrent ? "is-current" : ""}`}
+          style={{ opacity: player.connected ? 1 : 0.35 }}
+        >
+          {player.name}
+        </span>
+        <AnimatePresence>
+          {player.isUno && (
+            <motion.span
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0 }}
+              transition={{ type: "spring", bounce: 0.6 }}
+              style={{
+                color: "#e74c3c",
+                fontWeight: "bold",
+                fontSize: 11,
+              }}
+            >
+              UNO
+            </motion.span>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {canCatch && (
+            <motion.button
+              type="button"
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0 }}
+              transition={{ type: "spring", bounce: 0.5 }}
+              whileTap={{ scale: 0.85 }}
+              onClick={onCatch}
+              style={{
+                padding: "2px 8px",
+                fontSize: 10,
+                fontWeight: "bold",
+                borderRadius: 4,
+                border: "none",
+                backgroundColor: "#e67e22",
+                color: "white",
+                cursor: "pointer",
+              }}
+            >
+              Catch!
+            </motion.button>
+          )}
+        </AnimatePresence>
+      </div>
+      <CardBack count={player.cardCount} />
     </motion.div>
   );
 }
 
-// ─── Discard pile display ───
+// ─── Discard pile ───
 function DiscardPile({
   discardTop,
   activeSide,
@@ -153,25 +131,31 @@ function DiscardPile({
   chosenColor: string | null;
 }) {
   if (!discardTop) return null;
-
   const bg = getCardColor(discardTop, activeSide);
   const cardKey = `${discardTop.color}-${discardTop.value}`;
 
   return (
     <div style={{ textAlign: "center" }}>
-      <p style={{ color: "#888", fontSize: 12, margin: "0 0 4px" }}>Discard</p>
+      <p
+        style={{
+          color: "rgba(255,255,255,0.5)",
+          fontSize: 11,
+          margin: "0 0 4px",
+        }}
+      >
+        Discard
+      </p>
       <AnimatePresence mode="popLayout">
         <motion.div
           key={cardKey}
-          // Card lands on pile from below (played from hand)
           initial={{ y: 80, scale: 0.5, rotate: -12, opacity: 0 }}
           animate={{ y: 0, scale: 1, rotate: 0, opacity: 1 }}
           transition={{ type: "spring", stiffness: 300, damping: 20 }}
           style={{
-            width: 70,
-            height: 100,
+            width: 62,
+            height: 90,
             backgroundColor: bg,
-            borderRadius: 8,
+            borderRadius: 7,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -179,8 +163,7 @@ function DiscardPile({
             fontWeight: "bold",
             fontSize: 20,
             border: "2px solid rgba(255,255,255,0.3)",
-            boxShadow: "0 4px 20px rgba(0,0,0,0.4)",
-            margin: "0 auto",
+            boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
           }}
         >
           {formatValue(discardTop.value)}
@@ -208,6 +191,80 @@ function DiscardPile({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+// ─── Draw pile (stacked deck) ───
+function DrawPile({
+  count,
+  isMyTurn,
+  hasDrawn,
+  onDraw,
+}: {
+  count: number;
+  isMyTurn: boolean;
+  hasDrawn: boolean;
+  onDraw: () => void;
+}) {
+  const canDraw = isMyTurn && !hasDrawn;
+  return (
+    <div style={{ textAlign: "center" }}>
+      <p
+        style={{
+          color: "rgba(255,255,255,0.5)",
+          fontSize: 11,
+          margin: "0 0 4px",
+        }}
+      >
+        Draw
+      </p>
+      <motion.button
+        type="button"
+        whileHover={canDraw ? { scale: 1.06, y: -3 } : undefined}
+        whileTap={canDraw ? { scale: 0.94 } : undefined}
+        onClick={() => canDraw && onDraw()}
+        className="deck-stack"
+        style={{
+          border: "none",
+          background: "none",
+          padding: 0,
+          cursor: canDraw ? "pointer" : "default",
+          opacity: isMyTurn ? 1 : 0.6,
+        }}
+      >
+        {/* Stacked cards to give depth */}
+        <div className="deck-stack-card" style={{ top: 0, left: 0 }} />
+        <div className="deck-stack-card" style={{ top: -2, left: 1 }} />
+        <div
+          className="deck-stack-card"
+          style={{
+            top: -4,
+            left: 2,
+            border: canDraw
+              ? "2px solid #FFD700"
+              : "2px solid rgba(255,255,255,0.15)",
+            boxShadow: canDraw
+              ? "0 0 12px rgba(255,215,0,0.3)"
+              : "0 2px 8px rgba(0,0,0,0.4)",
+          }}
+        >
+          <span
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "rgba(255,255,255,0.4)",
+              fontWeight: "bold",
+              fontSize: 14,
+            }}
+          >
+            {count}
+          </span>
+        </div>
+      </motion.button>
     </div>
   );
 }
@@ -286,94 +343,97 @@ function ColorPicker({
   );
 }
 
-// ─── Opponent badge ───
-function OpponentBadge({
-  player,
-  isCurrent,
-  canCatch,
-  onCatch,
+// ─── Hand card (fan position + hover/tap) ───
+function HandCard({
+  card,
+  activeSide,
+  playable,
+  onClick,
+  index,
+  total,
+  isInitialDeal,
+  deckRef,
 }: {
-  player: PublicPlayer;
-  isCurrent: boolean;
-  canCatch: boolean;
-  onCatch: () => void;
+  card: Card;
+  activeSide: ActiveSide;
+  playable: boolean;
+  onClick: () => void;
+  index: number;
+  total: number;
+  isInitialDeal: boolean;
+  deckRef: React.RefObject<HTMLDivElement | null>;
 }) {
+  const face = activeSide === "light" ? card.light : card.dark;
+  const bg = getCardColor(face, activeSide);
+  const fan = getFanStyle(index, total);
+
+  // Calculate initial position relative to deck for dealing animation
+  const getDealOrigin = () => {
+    if (!isInitialDeal || !deckRef.current) {
+      return { y: 30, x: 60, scale: 0.5, rotate: 0, opacity: 0 };
+    }
+    // Cards come from the deck position (center of screen, above the hand)
+    return { y: -200, x: 0, scale: 0.4, rotate: -20, opacity: 0 };
+  };
+
   return (
     <motion.div
+      layout
+      initial={getDealOrigin()}
       animate={{
-        borderColor: isCurrent ? "#FFD700" : "transparent",
-        scale: isCurrent ? 1.06 : 1,
-        boxShadow: isCurrent
-          ? "0 0 12px rgba(255,215,0,0.3)"
-          : "0 0 0px rgba(0,0,0,0)",
+        y: fan.translateY,
+        x: 0,
+        opacity: 1,
+        scale: 1,
+        rotate: fan.rotate,
       }}
-      transition={{ type: "spring", bounce: 0.3 }}
+      exit={{
+        y: -160,
+        opacity: 0,
+        scale: 0.5,
+        rotate: 0,
+      }}
+      transition={{
+        type: "spring",
+        stiffness: 280,
+        damping: 26,
+        delay: isInitialDeal ? index * 0.12 : 0,
+      }}
       style={{
-        padding: "6px 12px",
-        borderRadius: 8,
-        backgroundColor: "#16213e",
-        border: "2px solid transparent",
-        fontSize: 13,
-        display: "flex",
-        gap: 8,
-        alignItems: "center",
+        marginLeft: index === 0 ? 0 : -10,
+        transformOrigin: "bottom center",
+        zIndex: index,
       }}
     >
-      <span style={{ opacity: player.connected ? 1 : 0.35 }}>
-        {player.name}
-      </span>
-      <motion.span
-        key={player.cardCount}
-        initial={{ scale: 1.5, color: "#FFD700" }}
-        animate={{ scale: 1, color: "#eee" }}
-        transition={{ type: "spring", bounce: 0.5 }}
+      <motion.button
+        type="button"
+        onClick={onClick}
+        whileHover={playable ? { y: -16, scale: 1.1 } : undefined}
+        whileTap={playable ? { scale: 0.9 } : undefined}
         style={{
-          backgroundColor: "#333",
-          padding: "2px 6px",
-          borderRadius: 4,
-          fontSize: 11,
+          width: 56,
+          height: 84,
+          backgroundColor: bg,
+          borderRadius: 7,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "white",
+          fontWeight: "bold",
+          fontSize: 15,
+          border: playable
+            ? "2.5px solid #FFD700"
+            : "2px solid rgba(255,255,255,0.2)",
+          boxShadow: playable
+            ? "0 4px 15px rgba(255,215,0,0.3)"
+            : "0 2px 8px rgba(0,0,0,0.4)",
+          cursor: playable ? "pointer" : "default",
+          opacity: playable ? 1 : 0.55,
+          padding: 0,
         }}
       >
-        {player.cardCount}
-      </motion.span>
-      <AnimatePresence>
-        {player.isUno && (
-          <motion.span
-            initial={{ scale: 0, rotate: -20 }}
-            animate={{ scale: 1, rotate: 0 }}
-            exit={{ scale: 0 }}
-            transition={{ type: "spring", bounce: 0.6 }}
-            style={{ color: "#e74c3c", fontWeight: "bold", fontSize: 11 }}
-          >
-            UNO
-          </motion.span>
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {canCatch && (
-          <motion.button
-            type="button"
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            exit={{ scale: 0 }}
-            transition={{ type: "spring", bounce: 0.5 }}
-            whileTap={{ scale: 0.85 }}
-            onClick={onCatch}
-            style={{
-              padding: "2px 8px",
-              fontSize: 11,
-              fontWeight: "bold",
-              borderRadius: 4,
-              border: "none",
-              backgroundColor: "#e67e22",
-              color: "white",
-              cursor: "pointer",
-            }}
-          >
-            Catch!
-          </motion.button>
-        )}
-      </AnimatePresence>
+        {formatValue(face.value)}
+      </motion.button>
     </motion.div>
   );
 }
@@ -389,23 +449,23 @@ export function GameScreen({
   const [hasDrawn, setHasDrawn] = useState(false);
   const [showFlip, setShowFlip] = useState(false);
   const hasDealtRef = useRef(false);
+  const deckRef = useRef<HTMLDivElement>(null);
 
   const myId = socket.id;
   const isMyTurn = gameState.players[gameState.currentPlayerIndex]?.id === myId;
   const currentPlayer = gameState.players[gameState.currentPlayerIndex];
   const opponents = gameState.players.filter((p) => p.id !== myId);
 
-  // Track whether initial deal stagger has played
+  // Track initial deal
   useEffect(() => {
     if (hand && hand.cards.length > 0 && !hasDealtRef.current) {
       const t = setTimeout(() => {
         hasDealtRef.current = true;
-      }, 900);
+      }, 1200);
       return () => clearTimeout(t);
     }
   }, [hand]);
 
-  // Reset hasDrawn when turn changes
   useEffect(() => {
     if (!isMyTurn) setHasDrawn(false);
   }, [isMyTurn]);
@@ -425,9 +485,9 @@ export function GameScreen({
   // Background theme shift
   useEffect(() => {
     document.body.style.backgroundColor =
-      gameState.activeSide === "dark" ? "#120a1e" : "#1a1a2e";
+      gameState.activeSide === "dark" ? "#071a0e" : "transparent";
     return () => {
-      document.body.style.backgroundColor = "#1a1a2e";
+      document.body.style.backgroundColor = "";
     };
   }, [gameState.activeSide]);
 
@@ -443,19 +503,17 @@ export function GameScreen({
 
   const handCards = hand?.cards ?? [];
 
+  // Reset hasDrawn when a card is played (hand size changes)
+  // Needed for skip_everyone where isMyTurn stays true
+  const handSize = handCards.length;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally re-run on handSize change
+  useEffect(() => {
+    setHasDrawn(false);
+  }, [handSize]);
+
   return (
-    <div
-      style={{
-        padding: 16,
-        fontFamily: "system-ui",
-        maxWidth: 500,
-        margin: "0 auto",
-        minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      {/* FLIP overlay */}
+    <div className="game-table">
+      {/* ─── Overlays ─── */}
       <AnimatePresence>
         {showFlip && (
           <motion.div
@@ -495,12 +553,11 @@ export function GameScreen({
         )}
       </AnimatePresence>
 
-      {/* Challenge overlay */}
       <AnimatePresence>
         {gameState.phase === "awaiting_challenge" &&
           gameState.challengeTarget === myId && (
             <motion.div
-              key="challenge-overlay"
+              key="challenge"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -516,23 +573,13 @@ export function GameScreen({
                 gap: 16,
               }}
             >
-              <motion.p
-                initial={{ y: -20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                style={{ color: "white", fontSize: 20 }}
-              >
+              <p style={{ color: "white", fontSize: 20 }}>
                 You've been hit with a Wild Draw!
-              </motion.p>
-              <p style={{ color: "#aaa", fontSize: 14 }}>
-                Accept the penalty or challenge (if you think it was played
-                illegally)
               </p>
-              <motion.div
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ delay: 0.15 }}
-                style={{ display: "flex", gap: 12 }}
-              >
+              <p style={{ color: "#aaa", fontSize: 14 }}>
+                Accept the penalty or challenge
+              </p>
+              <div style={{ display: "flex", gap: 12 }}>
                 <motion.button
                   type="button"
                   whileHover={{ scale: 1.06 }}
@@ -569,12 +616,11 @@ export function GameScreen({
                 >
                   Challenge!
                 </motion.button>
-              </motion.div>
+              </div>
             </motion.div>
           )}
       </AnimatePresence>
 
-      {/* Color picker overlay */}
       <AnimatePresence>
         {gameState.phase === "choosing_color" && isMyTurn && (
           <ColorPicker
@@ -589,39 +635,10 @@ export function GameScreen({
         )}
       </AnimatePresence>
 
-      {/* Side indicator */}
-      <motion.div
-        key={gameState.activeSide}
-        initial={{ opacity: 0, y: -8 }}
-        animate={{ opacity: 1, y: 0 }}
-        style={{
-          textAlign: "center",
-          padding: "4px 12px",
-          borderRadius: 4,
-          backgroundColor:
-            gameState.activeSide === "light" ? "#444" : "#1a1a1a",
-          fontSize: 12,
-          color: "#aaa",
-          marginBottom: 12,
-          alignSelf: "center",
-        }}
-      >
-        {gameState.activeSide.toUpperCase()} SIDE •{" "}
-        {gameState.direction === "clockwise" ? "→" : "←"}
-      </motion.div>
-
-      {/* Opponents */}
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 8,
-          justifyContent: "center",
-          marginBottom: 16,
-        }}
-      >
+      {/* ─── Opponents (top) ─── */}
+      <div className="opponents-zone">
         {opponents.map((p) => (
-          <OpponentBadge
+          <OpponentSlot
             key={p.id}
             player={p}
             isCurrent={currentPlayer?.id === p.id}
@@ -631,159 +648,128 @@ export function GameScreen({
         ))}
       </div>
 
-      {/* Center area: discard + draw pile */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          gap: 24,
-          alignItems: "center",
-          marginBottom: 16,
-          flexGrow: 1,
-        }}
-      >
+      {/* ─── Center (deck + discard) ─── */}
+      <div className="center-zone" ref={deckRef}>
+        <DrawPile
+          count={gameState.drawPileCount}
+          isMyTurn={isMyTurn}
+          hasDrawn={hasDrawn}
+          onDraw={() => {
+            socket.emit("DRAW_CARD");
+            setHasDrawn(true);
+          }}
+        />
         <DiscardPile
           discardTop={gameState.discardTop}
           activeSide={gameState.activeSide}
           chosenColor={gameState.chosenColor}
         />
+      </div>
 
-        <div style={{ textAlign: "center" }}>
-          <p style={{ color: "#888", fontSize: 12, margin: "0 0 4px" }}>Draw</p>
-          <motion.button
-            type="button"
-            whileHover={
-              isMyTurn && !hasDrawn ? { scale: 1.08, y: -4 } : undefined
-            }
-            whileTap={isMyTurn && !hasDrawn ? { scale: 0.94 } : undefined}
-            onClick={() => {
-              if (isMyTurn && !hasDrawn) {
-                socket.emit("DRAW_CARD");
-                setHasDrawn(true);
-              }
-            }}
+      {/* ─── Info (turn + buttons) ─── */}
+      <div className="info-zone">
+        {/* Side indicator */}
+        <div
+          style={{
+            padding: "3px 10px",
+            borderRadius: 4,
+            backgroundColor: "rgba(0,0,0,0.3)",
+            fontSize: 11,
+            color: "rgba(255,255,255,0.5)",
+          }}
+        >
+          {gameState.activeSide.toUpperCase()} SIDE •{" "}
+          {gameState.direction === "clockwise" ? "→" : "←"}
+        </div>
+
+        {/* Turn indicator */}
+        <AnimatePresence mode="wait">
+          <motion.p
+            key={isMyTurn ? "your-turn" : currentPlayer?.id}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.2 }}
             style={{
-              width: 70,
-              height: 100,
-              backgroundColor: "#2c3e50",
-              borderRadius: 8,
-              border: isMyTurn
-                ? "3px solid #FFD700"
-                : "2px solid rgba(255,255,255,0.2)",
-              boxShadow: isMyTurn
-                ? "0 0 12px rgba(255,215,0,0.2)"
-                : "0 2px 8px rgba(0,0,0,0.3)",
-              color: "#888",
-              fontWeight: "bold",
-              fontSize: 14,
-              cursor: isMyTurn ? "pointer" : "default",
-              opacity: isMyTurn ? 1 : 0.5,
+              color: isMyTurn ? "#FFD700" : "rgba(255,255,255,0.6)",
+              fontWeight: isMyTurn ? "bold" : "normal",
+              fontSize: 15,
+              margin: 0,
             }}
           >
-            {gameState.drawPileCount}
-          </motion.button>
+            {isMyTurn ? "Your turn!" : `${currentPlayer?.name ?? "..."}'s turn`}
+          </motion.p>
+        </AnimatePresence>
+
+        {/* Pass + UNO buttons */}
+        <div style={{ display: "flex", gap: 10 }}>
+          <AnimatePresence>
+            {isMyTurn && hasDrawn && (
+              <motion.button
+                key="pass"
+                type="button"
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.8 }}
+                whileTap={{ scale: 0.94 }}
+                onClick={() => {
+                  socket.emit("PASS_TURN");
+                  setHasDrawn(false);
+                }}
+                style={{
+                  padding: "6px 16px",
+                  fontSize: 13,
+                  fontWeight: "bold",
+                  borderRadius: 6,
+                  border: "1px solid rgba(255,255,255,0.3)",
+                  backgroundColor: "rgba(0,0,0,0.3)",
+                  color: "rgba(255,255,255,0.7)",
+                  cursor: "pointer",
+                }}
+              >
+                Pass
+              </motion.button>
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {hand &&
+              hand.cards.length <= 2 &&
+              isMyTurn &&
+              handCards.some((c) => canPlay(c)) && (
+                <motion.button
+                  key="uno"
+                  type="button"
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  exit={{ scale: 0 }}
+                  transition={{ type: "spring", bounce: 0.5 }}
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.85 }}
+                  onClick={() => socket.emit("CALL_UNO")}
+                  style={{
+                    padding: "6px 20px",
+                    fontSize: 16,
+                    fontWeight: "bold",
+                    borderRadius: 8,
+                    border: "none",
+                    backgroundColor: "#e74c3c",
+                    color: "white",
+                    cursor: "pointer",
+                    boxShadow: "0 4px 16px rgba(231,76,60,0.5)",
+                  }}
+                >
+                  UNO!
+                </motion.button>
+              )}
+          </AnimatePresence>
         </div>
       </div>
 
-      {/* Turn indicator */}
-      <AnimatePresence mode="wait">
-        <motion.p
-          key={isMyTurn ? "your-turn" : currentPlayer?.id}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -8 }}
-          transition={{ duration: 0.2 }}
-          style={{
-            textAlign: "center",
-            color: isMyTurn ? "#FFD700" : "#888",
-            fontWeight: isMyTurn ? "bold" : "normal",
-            fontSize: 16,
-            marginBottom: 12,
-          }}
-        >
-          {isMyTurn ? "Your turn!" : `${currentPlayer?.name ?? "..."}'s turn`}
-        </motion.p>
-      </AnimatePresence>
-
-      {/* Pass button */}
-      <AnimatePresence>
-        {isMyTurn && hasDrawn && (
-          <motion.button
-            key="pass-btn"
-            type="button"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            whileHover={{ scale: 1.04 }}
-            whileTap={{ scale: 0.96 }}
-            onClick={() => {
-              socket.emit("PASS_TURN");
-              setHasDrawn(false);
-            }}
-            style={{
-              padding: "8px 24px",
-              fontSize: 14,
-              fontWeight: "bold",
-              borderRadius: 8,
-              border: "1px solid #666",
-              backgroundColor: "transparent",
-              color: "#aaa",
-              cursor: "pointer",
-              alignSelf: "center",
-              marginBottom: 12,
-            }}
-          >
-            Pass (don't play drawn card)
-          </motion.button>
-        )}
-      </AnimatePresence>
-
-      {/* UNO button */}
-      <AnimatePresence>
-        {hand && hand.cards.length <= 2 && isMyTurn && (
-          <motion.button
-            key="uno-btn"
-            type="button"
-            initial={{ scale: 0, opacity: 0, rotate: -20 }}
-            animate={{ scale: 1, opacity: 1, rotate: 0 }}
-            exit={{ scale: 0, opacity: 0 }}
-            transition={{ type: "spring", bounce: 0.5 }}
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.85 }}
-            onClick={() => socket.emit("CALL_UNO")}
-            style={{
-              padding: "10px 28px",
-              fontSize: 18,
-              fontWeight: "bold",
-              borderRadius: 10,
-              border: "none",
-              backgroundColor: "#e74c3c",
-              color: "white",
-              cursor: "pointer",
-              alignSelf: "center",
-              marginBottom: 12,
-              boxShadow: "0 4px 20px rgba(231,76,60,0.4)",
-            }}
-          >
-            UNO!
-          </motion.button>
-        )}
-      </AnimatePresence>
-
-      {/* Your hand — fan layout */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "flex-end",
-          padding: "12px 0 20px",
-          minHeight: 110,
-          overflowX: handCards.length > 10 ? "auto" : "visible",
-        }}
-      >
+      {/* ─── Your hand (bottom) ─── */}
+      <div className="hand-zone">
         <AnimatePresence>
           {handCards.map((card, index) => (
-            <CardView
+            <HandCard
               key={card.id}
               card={card}
               activeSide={gameState.activeSide}
@@ -791,6 +777,7 @@ export function GameScreen({
               index={index}
               total={handCards.length}
               isInitialDeal={!hasDealtRef.current}
+              deckRef={deckRef}
               onClick={() => {
                 if (isMyTurn && canPlay(card)) {
                   socket.emit("PLAY_CARD", { cardId: card.id });
