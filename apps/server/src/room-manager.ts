@@ -170,6 +170,7 @@ export function getPublicPlayers(room: {
     id: p.id,
     name: p.name,
     cardCount: 0,
+    cardIds: [] as number[],
     isUno: false,
     connected: p.connected,
   }));

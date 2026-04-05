@@ -153,7 +153,7 @@ export interface PlayResult {
   error?: string;
   needsColorChoice?: boolean;
   flip?: boolean;
-  cardPlayed?: CardSide;
+  cardPlayedId?: number;
   drawnByNext?: Card[];
   skippedPlayerIds?: string[];
   roundOver?: boolean;
@@ -222,12 +222,12 @@ export function playCard(
 
   // Check if player won the round (empty hand)
   if (hand.length === 0) {
-    return handleRoundWin(game, playerId, cardFace, action);
+    return handleRoundWin(game, playerId, card.id, cardFace, action);
   }
 
   const result: PlayResult = {
     success: true,
-    cardPlayed: cardFace,
+    cardPlayedId: card.id,
     needsColorChoice: action.needsColorChoice,
     flip: action.flip,
   };
@@ -610,13 +610,14 @@ function clearChallengeState(game: GameInstance): void {
 function handleRoundWin(
   game: GameInstance,
   winnerId: string,
-  cardPlayed: CardSide,
+  cardPlayedId: number,
+  _cardFace: CardSide,
   action: ReturnType<typeof resolveAction>,
 ): PlayResult {
   // Last card action effects still apply
   const result: PlayResult = {
     success: true,
-    cardPlayed,
+    cardPlayedId,
     roundOver: true,
     winnerId,
   };
@@ -668,13 +669,17 @@ export function getPublicGameState(
   game: GameInstance,
   hostId: string,
 ): GameState {
-  const players: PublicPlayer[] = game.playerIds.map((id) => ({
-    id,
-    name: game.playerNames.get(id) ?? "Unknown",
-    cardCount: game.hands.get(id)?.length ?? 0,
-    isUno: game.calledUno.has(id),
-    connected: game.connectedPlayers.has(id),
-  }));
+  const players: PublicPlayer[] = game.playerIds.map((id) => {
+    const hand = game.hands.get(id) ?? [];
+    return {
+      id,
+      name: game.playerNames.get(id) ?? "Unknown",
+      cardCount: hand.length,
+      cardIds: hand.map((c) => c.id),
+      isUno: game.calledUno.has(id),
+      connected: game.connectedPlayers.has(id),
+    };
+  });
 
   return {
     phase: game.phase,
@@ -691,9 +696,29 @@ export function getPublicGameState(
   };
 }
 
-// ─── Get a player's hand ───
-export function getPlayerHand(game: GameInstance, playerId: string): Card[] {
-  return game.hands.get(playerId) ?? [];
+// ─── Get a player's hand as card IDs ───
+export function getPlayerHandIds(
+  game: GameInstance,
+  playerId: string,
+): number[] {
+  return (game.hands.get(playerId) ?? []).map((c) => c.id);
+}
+
+// ─── Get deal info for all players (sent at game start) ───
+export function getDealInfo(game: GameInstance): {
+  deals: { playerId: string; cardIds: number[] }[];
+  discardTopCardId: number;
+} {
+  const deals = game.playerIds.map((id) => ({
+    playerId: id,
+    cardIds: (game.hands.get(id) ?? []).map((c) => c.id),
+  }));
+
+  const discardTop = game.deck.discardPile[game.deck.discardPile.length - 1];
+  return {
+    deals,
+    discardTopCardId: discardTop?.id ?? 0,
+  };
 }
 
 // ─── Reconnect a player with a new socket ID ───

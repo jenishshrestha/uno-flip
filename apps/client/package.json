@@ -10,18 +10,29 @@
     "check-types": "tsc --noEmit"
   },
   "dependencies": {
+    "@gsap/react": "^2.1.2",
+    "@react-spring/three": "^10.0.3",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.5.0",
+    "@react-three/postprocessing": "^3.0.4",
+    "@react-three/rapier": "^2.2.0",
     "@uno-flip/shared": "workspace:*",
+    "gsap": "^3.14.2",
     "motion": "^12.38.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "socket.io-client": "^4.8.1",
-    "sonner": "^2.0.7"
+    "sonner": "^2.0.7",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.183.1",
     "@uno-flip/typescript-config": "workspace:*",
     "@vitejs/plugin-react": "^6.0.1",
+    "leva": "^0.10.1",
+    "r3f-perf": "^7.2.3",
     "typescript": "5.9.2",
     "vite": "^8.0.1"
   }

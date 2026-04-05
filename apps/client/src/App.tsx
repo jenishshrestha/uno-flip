@@ -1,12 +1,19 @@
-import type { GameState, PlayerHand, PublicPlayer } from "@uno-flip/shared";
+import type {
+  Card,
+  GameState,
+  PlayerHand,
+  PublicPlayer,
+} from "@uno-flip/shared";
+import { DECK_MAP } from "@uno-flip/shared";
 import { useEffect, useState } from "react";
 import { Toaster, toast } from "sonner";
 import "./App.css";
-import { GameScreen } from "./screens/GameScreen.js";
 import { ScoreScreen } from "./screens/ScoreScreen.js";
 import { SERVER_URL, socket } from "./socket.js";
 import { playUnoSound } from "./sounds.js";
 import { styles } from "./styles.js";
+import { TestScene } from "./three/TestScene.js";
+import { ThreeGameScreen } from "./three/ThreeGameScreen.js";
 
 function getHash() {
   return window.location.hash.slice(1) || "/";
@@ -88,10 +95,12 @@ function App() {
       setHand(h);
     });
 
-    socket.on("CARD_PLAYED", ({ playerId, card }) => {
+    socket.on("CARD_PLAYED", ({ playerId, cardId }) => {
       const name = players.find((p) => p.id === playerId)?.name ?? "Someone";
-      if (playerId !== socket.id) {
-        toast(`${name} played ${card.value}`);
+      const card = DECK_MAP.get(cardId);
+      if (playerId !== socket.id && card) {
+        const face = gameState?.activeSide === "light" ? card.light : card.dark;
+        toast(`${name} played ${face.value}`);
       }
     });
 
@@ -157,7 +166,7 @@ function App() {
       socket.off("GAME_OVER");
       socket.off("ERROR");
     };
-  }, [players]);
+  }, [players, gameState]);
 
   // ─── SCORE SCREEN ───
   if (
@@ -182,9 +191,14 @@ function App() {
     return (
       <>
         <Toaster position="top-center" theme="dark" />
-        <GameScreen gameState={gameState} hand={hand} />
+        <ThreeGameScreen gameState={gameState} hand={hand} />
       </>
     );
+  }
+
+  // ─── TEST SCENE (dev only) ───
+  if (hash === "/test") {
+    return <TestScene />;
   }
 
   // ─── HOME ───

@@ -15,7 +15,8 @@ import {
   challengeDraw,
   createGame,
   type GameInstance,
-  getPlayerHand,
+  getDealInfo,
+  getPlayerHandIds,
   getPublicGameState,
   passTurn,
   playCard,
@@ -97,10 +98,10 @@ function broadcastGameState(roomCode: string, hostId: string): void {
   const publicState = getPublicGameState(game, hostId);
   io.to(roomCode).emit("GAME_STATE", { gameState: publicState });
 
-  // Send each player their private hand
+  // Send each player their private hand (card IDs)
   for (const playerId of game.playerIds) {
-    const hand = getPlayerHand(game, playerId);
-    io.to(playerId).emit("HAND_UPDATE", { hand: { cards: hand } });
+    const cardIds = getPlayerHandIds(game, playerId);
+    io.to(playerId).emit("HAND_UPDATE", { hand: { cardIds } });
   }
 }
 
@@ -150,6 +151,7 @@ io.on("connection", (socket) => {
         id: player.id,
         name: player.name,
         cardCount: 0,
+        cardIds: [],
         isUno: false,
         connected: true,
       },
@@ -175,6 +177,14 @@ io.on("connection", (socket) => {
     games.set(room.code, game);
     room.gameStarted = true;
 
+    // Send deal info — all players' card assignments
+    const dealInfo = getDealInfo(game);
+    io.to(room.code).emit("DEAL_CARDS", {
+      deals: dealInfo.deals,
+      discardTopCardId: dealInfo.discardTopCardId,
+      drawPileCount: game.deck.drawPile.length,
+    });
+
     broadcastGameState(room.code, room.hostId);
     console.log(`Game started in room ${room.code}`);
   });
@@ -194,10 +204,10 @@ io.on("connection", (socket) => {
     }
 
     // Broadcast the card that was played
-    if (result.cardPlayed) {
+    if (result.cardPlayedId !== undefined) {
       io.to(room.code).emit("CARD_PLAYED", {
         playerId: socket.id,
-        card: result.cardPlayed,
+        cardId: result.cardPlayedId,
       });
     }
 

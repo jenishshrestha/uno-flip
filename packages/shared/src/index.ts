@@ -1,8 +1,8 @@
-// Types
-
-// Constants (values, not just types)
-export { FULL_DECK } from "./constants/deck.js";
+// Constants
+export { DECK_MAP, FULL_DECK } from "./constants/deck.js";
 export { CARD_POINTS, GAME_RULES } from "./constants/rules.js";
+
+// Types
 export type {
   ActiveSide,
   Card,
@@ -16,6 +16,7 @@ export type {
   ServerToClientEvents,
 } from "./types/events.js";
 export type {
+  DealInfo,
   Direction,
   GamePhase,
   GameState,

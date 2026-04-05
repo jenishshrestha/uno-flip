@@ -1,5 +1,5 @@
-import type { CardSide, DarkColor, LightColor } from "./card.js";
-import type { GameState, PlayerHand, PublicPlayer } from "./game.js";
+import type { DarkColor, LightColor } from "./card.js";
+import type { DealInfo, GameState, PlayerHand, PublicPlayer } from "./game.js";
 
 // ─── Client → Server events ───
 export interface ClientToServerEvents {
@@ -11,10 +11,10 @@ export interface ClientToServerEvents {
   CALL_UNO: () => void;
   CATCH_UNO: (data: { targetPlayerId: string }) => void;
   SELECT_COLOR: (data: { color: LightColor | DarkColor }) => void;
-  PASS_TURN: () => void; // pass after drawing a playable card
-  CHALLENGE_DRAW: () => void; // target challenges a wild draw two/color
-  ACCEPT_DRAW: () => void; // target accepts the draw penalty
-  START_NEXT_ROUND: () => void; // host starts the next round (keeps cumulative scores)
+  PASS_TURN: () => void;
+  CHALLENGE_DRAW: () => void;
+  ACCEPT_DRAW: () => void;
+  START_NEXT_ROUND: () => void;
 }
 
 // ─── Server → Client events ───
@@ -24,7 +24,13 @@ export interface ServerToClientEvents {
   PLAYER_LEFT: (data: { playerId: string }) => void;
   GAME_STATE: (data: { gameState: GameState }) => void;
   HAND_UPDATE: (data: { hand: PlayerHand }) => void;
-  CARD_PLAYED: (data: { playerId: string; card: CardSide }) => void;
+  DEAL_CARDS: (data: {
+    deals: DealInfo[];
+    discardTopCardId: number;
+    drawPileCount: number;
+  }) => void;
+  CARD_PLAYED: (data: { playerId: string; cardId: number }) => void;
+  CARD_DRAWN: (data: { playerId: string; cardId: number }) => void;
   FLIP_EVENT: () => void;
   UNO_CALLED: (data: { playerId: string; playerName: string }) => void;
   UNO_CAUGHT: (data: {
@@ -35,7 +41,7 @@ export interface ServerToClientEvents {
   CHALLENGE_RESULT: (data: {
     challengerId: string;
     challengedId: string;
-    success: boolean; // true = illegal play caught, false = legal play
+    success: boolean;
     penaltyCards: number;
   }) => void;
   ROUND_OVER: (data: {
