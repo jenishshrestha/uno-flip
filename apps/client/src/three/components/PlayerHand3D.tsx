@@ -2,8 +2,7 @@ import { useThree } from "@react-three/fiber";
 import type { ActiveSide, Card } from "@uno-flip/shared";
 import gsap from "gsap";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Group } from "three";
-import { Vector3 } from "three";
+import { type Camera, Euler, type Group, Quaternion, Vector3 } from "three";
 import { useFanFlipAnimation } from "../hooks/useAnimations.js";
 import { Card3D } from "./Card3D.js";
 
@@ -20,6 +19,42 @@ export const DEFAULT_HAND_CONFIG: HandConfig = {
   tiltX: -1.5,
   cardScale: 1.0,
 };
+
+// Project hand's screen Y onto the Y=0 world plane.
+export function getHandWorldPos(
+  camera: Camera,
+  config: HandConfig,
+): { x: number; z: number } {
+  const ndc = new Vector3(0, config.screenY, 0.5);
+  ndc.unproject(camera);
+  const dir = ndc.sub(camera.position).normalize();
+  const t = -camera.position.y / dir.y;
+  const hit = camera.position.clone().add(dir.multiplyScalar(t));
+  return { x: hit.x, z: hit.z };
+}
+
+// World pose for one card slot in the fan. Mirrors the internal layout math
+// so a drawn card can land exactly where it'll live post-commit.
+export function getHandSlotTransform(
+  camera: Camera,
+  config: HandConfig,
+  slotIndex: number,
+  totalCount: number,
+): { position: Vector3; quaternion: Quaternion; scale: number } {
+  const { x: handX, z: handZ } = getHandWorldPos(camera, config);
+  const n = Math.max(totalCount, 1);
+  const spacing = Math.min(config.cardSpacing, 6 / n);
+  const startX = handX - ((n - 1) * spacing) / 2;
+  const position = new Vector3(
+    startX + slotIndex * spacing,
+    0.01 + slotIndex * 0.003,
+    handZ,
+  );
+  const quaternion = new Quaternion().setFromEuler(
+    new Euler(config.tiltX, 0, 0),
+  );
+  return { position, quaternion, scale: config.cardScale };
+}
 
 // How much the hovered card lifts
 const HOVER_LIFT = 0.5;
@@ -39,7 +74,14 @@ export function PlayerHand3D({
   cards: Card[];
   activeSide: ActiveSide;
   config?: HandConfig;
-  onPlayCard?: (card: Card) => void;
+  onPlayCard?: (
+    card: Card,
+    fromPose: {
+      position: Vector3;
+      quaternion: Quaternion;
+      scale: number;
+    },
+  ) => void;
 }) {
   const { camera } = useThree();
   const { screenY, cardSpacing, tiltX, cardScale } = config;
@@ -170,7 +212,17 @@ export function PlayerHand3D({
               }}
               onClick={(e) => {
                 e.stopPropagation();
-                onPlayCard?.(card);
+                const ref = cardRefs.current[i];
+                if (!ref) return;
+                const position = new Vector3();
+                const quaternion = new Quaternion();
+                ref.getWorldPosition(position);
+                ref.getWorldQuaternion(quaternion);
+                onPlayCard?.(card, {
+                  position,
+                  quaternion,
+                  scale: cardScale,
+                });
               }}
             >
               <Card3D card={card} activeSide={activeSide} />

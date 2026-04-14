@@ -1,100 +1,138 @@
-import { Text } from "@react-three/drei";
-import { RigidBody } from "@react-three/rapier";
-import { useCardBackTexture } from "../hooks/useCardTexture.js";
-import { CARD_DEPTH, CARD_HEIGHT, CARD_WIDTH } from "../utils/constants.js";
+import { useThree } from "@react-three/fiber";
+import type { ActiveSide, Card } from "@uno-flip/shared";
+import { useMemo } from "react";
+import { type Camera, Euler, Quaternion, Vector3 } from "three";
+import { CARD_DEPTH } from "../utils/constants.js";
+import { Card3D } from "./Card3D.js";
 
-// Gap between cards in the stack
-const STACK_GAP = CARD_DEPTH + 0.001;
+const STACK_VISIBLE = 50;
+const STACK_GAP = CARD_DEPTH;
+
+export interface DeckConfig {
+  screenLeft: number;
+  screenTop: number;
+  scale: number;
+  tiltX: number;
+  tiltY: number;
+  tiltZ: number;
+}
+
+export const DEFAULT_DECK_CONFIG: DeckConfig = {
+  screenLeft: 82,
+  screenTop: 90,
+  scale: 1.0,
+  // Match PlayerHand3D default tiltX so deck cards face camera the same way
+  tiltX: -1.5,
+  tiltY: 0,
+  tiltZ: 0,
+};
+
+// Project the deck's screen position onto the Y=0 world plane.
+export function getDeckWorldPos(
+  camera: Camera,
+  config: DeckConfig,
+): { x: number; z: number } {
+  const ndcX = (config.screenLeft / 100) * 2 - 1;
+  const ndcY = -((config.screenTop / 100) * 2 - 1);
+  const ndc = new Vector3(ndcX, ndcY, 0.5);
+  ndc.unproject(camera);
+  const dir = ndc.sub(camera.position).normalize();
+  if (Math.abs(dir.y) < 1e-6) return { x: 0, z: 0 };
+  const t = -camera.position.y / dir.y;
+  const hit = camera.position.clone().add(dir.multiplyScalar(t));
+  return { x: hit.x, z: hit.z };
+}
+
+// World pose of the top card on the deck (the one that gets drawn next).
+// `visibleCount` is the number of cards currently rendered in the stack
+// (up to STACK_VISIBLE); the top card sits at local z = -(visibleCount-1)*gap.
+export function getDeckTopTransform(
+  config: DeckConfig,
+  worldPos: { x: number; z: number },
+  visibleCount: number,
+): { position: Vector3; quaternion: Quaternion; scale: number } {
+  const clampedCount = Math.min(visibleCount, STACK_VISIBLE);
+  const groupQuat = new Quaternion().setFromEuler(
+    new Euler(config.tiltX, config.tiltY, config.tiltZ),
+  );
+  const localPos = new Vector3(
+    0,
+    0,
+    -(clampedCount - 1) * STACK_GAP,
+  ).multiplyScalar(config.scale);
+  const position = new Vector3(worldPos.x, 0, worldPos.z).add(
+    localPos.applyQuaternion(groupQuat),
+  );
+  return { position, quaternion: groupQuat, scale: config.scale };
+}
 
 export function DeckPile({
-  position,
-  count,
-  canDraw,
-  onDraw,
+  cards,
+  activeSide,
+  config = DEFAULT_DECK_CONFIG,
+  onClick,
 }: {
-  position: [number, number, number];
-  count: number;
-  canDraw: boolean;
-  onDraw: () => void;
+  cards: Card[];
+  activeSide: ActiveSide;
+  config?: DeckConfig;
+  onClick?: () => void;
 }) {
-  const backTexture = useCardBackTexture();
+  const { screenLeft, screenTop, scale, tiltX, tiltY, tiltZ } = config;
+  const { camera } = useThree();
+
+  const worldPos = useMemo(() => {
+    const ndcX = (screenLeft / 100) * 2 - 1;
+    const ndcY = -((screenTop / 100) * 2 - 1);
+    const ndc = new Vector3(ndcX, ndcY, 0.5);
+    ndc.unproject(camera);
+    const dir = ndc.sub(camera.position).normalize();
+    if (Math.abs(dir.y) < 1e-6) return { x: 0, z: 0 };
+    const t = -camera.position.y / dir.y;
+    const hit = camera.position.clone().add(dir.multiplyScalar(t));
+    return { x: hit.x, z: hit.z };
+  }, [camera, screenLeft, screenTop]);
+
+  if (cards.length === 0) return null;
+
+  const visibleCards = cards.slice(-STACK_VISIBLE);
 
   return (
-    <group position={position}>
-      {/* Each card is a real physics body, stacked and sleeping */}
-      {Array.from({ length: count }).map((_, i) => (
-        <RigidBody
-          // biome-ignore lint/suspicious/noArrayIndexKey: deck cards are identical
-          key={i}
-          type="dynamic"
-          position={[0, i * STACK_GAP + STACK_GAP, 0]}
-          rotation={[-Math.PI / 2, 0, 0]}
-          colliders="cuboid"
-          friction={0.3}
-          restitution={0.0}
-          linearDamping={0.8}
-          angularDamping={0.8}
-          canSleep
-        >
-          <mesh castShadow>
-            <boxGeometry args={[CARD_WIDTH, CARD_HEIGHT, CARD_DEPTH]} />
-            <meshStandardMaterial attach="material-0" transparent opacity={0} />
-            <meshStandardMaterial attach="material-1" transparent opacity={0} />
-            <meshStandardMaterial attach="material-2" transparent opacity={0} />
-            <meshStandardMaterial attach="material-3" transparent opacity={0} />
-            <meshPhysicalMaterial
-              attach="material-4"
-              map={backTexture}
-              transparent
-              alphaTest={0.5}
-              clearcoat={0.2}
-              roughness={0.4}
-            />
-            <meshPhysicalMaterial
-              attach="material-5"
-              map={backTexture}
-              transparent
-              alphaTest={0.5}
-              clearcoat={0.2}
-              roughness={0.4}
-            />
-          </mesh>
-        </RigidBody>
+    // biome-ignore lint/a11y/noStaticElementInteractions: Three.js group
+    <group
+      position={[worldPos.x, 0, worldPos.z]}
+      rotation={[tiltX, tiltY, tiltZ]}
+      scale={scale}
+      onClick={
+        onClick
+          ? (e) => {
+              e.stopPropagation();
+              onClick();
+            }
+          : undefined
+      }
+      onPointerEnter={
+        onClick
+          ? () => {
+              document.body.style.cursor = "pointer";
+            }
+          : undefined
+      }
+      onPointerLeave={
+        onClick
+          ? () => {
+              document.body.style.cursor = "default";
+            }
+          : undefined
+      }
+    >
+      {visibleCards.map((card, i) => (
+        <Card3D
+          key={card.id}
+          card={card}
+          activeSide={activeSide}
+          position={[0, 0, -i * STACK_GAP]}
+        />
       ))}
-
-      {/* Clickable hit area on top of stack */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: Three.js mesh */}
-      <mesh
-        position={[0, count * STACK_GAP + 0.02, 0]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        onClick={canDraw ? onDraw : undefined}
-        onPointerEnter={
-          canDraw
-            ? (e) => {
-                e.stopPropagation();
-                document.body.style.cursor = "pointer";
-              }
-            : undefined
-        }
-        onPointerLeave={() => {
-          document.body.style.cursor = "default";
-        }}
-      >
-        <planeGeometry args={[CARD_WIDTH, CARD_HEIGHT]} />
-        <meshBasicMaterial transparent opacity={0} />
-      </mesh>
-
-      {/* Card count */}
-      <Text
-        position={[0, 0.01, CARD_HEIGHT / 2 + 0.25]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={0.2}
-        color="#aaaaaa"
-        anchorX="center"
-        anchorY="top"
-      >
-        {String(count)}
-      </Text>
     </group>
   );
 }

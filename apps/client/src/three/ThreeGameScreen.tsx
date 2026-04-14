@@ -1,22 +1,399 @@
 import { Canvas, useThree } from "@react-three/fiber";
 import type { Card, GameState, PlayerHand } from "@uno-flip/shared";
-import { DECK_MAP } from "@uno-flip/shared";
-import { Suspense, useEffect, useMemo, useRef } from "react";
-import { Vector3 } from "three";
+import { DECK_MAP, FULL_DECK } from "@uno-flip/shared";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { Camera } from "three";
+import { Euler, Quaternion, Vector3 } from "three";
 import { socket } from "../socket.js";
-import { playUnoSound } from "../sounds.js";
+import {
+  playDrawSound,
+  playPickSound,
+  playThrowSound,
+  playUnoSound,
+} from "../sounds.js";
 import { DealSequence } from "./components/DealSequence.js";
-import { DiscardPile3D } from "./components/DiscardPile3D.js";
+import type { DeckConfig } from "./components/DeckPile.js";
+import {
+  DeckPile,
+  getDeckTopTransform,
+  getDeckWorldPos,
+} from "./components/DeckPile.js";
+import type { DiscardConfig } from "./components/DiscardPile3D.js";
+import {
+  DEFAULT_DISCARD_CONFIG,
+  DiscardPile3D,
+  getDiscardTopTransform,
+  getDiscardWorldPos,
+  getNextDiscardSlot,
+} from "./components/DiscardPile3D.js";
 import { OpponentHand3D } from "./components/OpponentHand3D.js";
 import type { HandConfig } from "./components/PlayerHand3D.js";
-import { PlayerHand3D } from "./components/PlayerHand3D.js";
+import {
+  getHandSlotTransform,
+  PlayerHand3D,
+} from "./components/PlayerHand3D.js";
 import { SceneLighting } from "./components/SceneLighting.js";
+import { TableLogo } from "./components/TableLogo.js";
+import type { ThrowPose } from "./components/ThrowCardSequence.js";
+import { ThrowCardSequence } from "./components/ThrowCardSequence.js";
 import {
   CAMERA_FAR,
   CAMERA_FOV,
   CAMERA_NEAR,
   CAMERA_POSITION,
 } from "./utils/constants.js";
+
+// Must match OpponentHand3D's layout constants
+const OPP_CARD_SPACING = 0.15;
+const OPP_CARD_SCALE = 0.5;
+
+// Compute where the top of an opponent's hand is in world space + the pose of
+// a specific card slot. Mirrors OpponentHand3D exactly so the throw starts
+// from where the card visually sits.
+function getOpponentCardPose(
+  camera: Camera,
+  opp: OpponentSeat,
+  slotIndex: number,
+): ThrowPose {
+  const ndcX = (opp.screenLeft / 100) * 2 - 1;
+  const ndcY = -((opp.screenTop / 100) * 2 - 1);
+  const ndc = new Vector3(ndcX, ndcY, 0.5);
+  ndc.unproject(camera);
+  const dir = ndc.sub(camera.position).normalize();
+  const t = -camera.position.y / dir.y;
+  const hit = camera.position.clone().add(dir.multiplyScalar(t));
+
+  const count = opp.cards.length;
+  const spacing = Math.min(OPP_CARD_SPACING, 2 / Math.max(count, 1));
+  const totalWidth = (count - 1) * spacing;
+  const startX = hit.x - totalWidth / 2;
+
+  const position = new Vector3(
+    startX + slotIndex * spacing,
+    0.01 + slotIndex * 0.002,
+    hit.z + 0.8,
+  );
+  const quaternion = new Quaternion().setFromEuler(new Euler(-1.5, Math.PI, 0));
+  return { position, quaternion, scale: OPP_CARD_SCALE };
+}
+
+export interface OpponentSeat {
+  id: string;
+  cards: Card[];
+  screenLeft: number;
+  screenTop: number;
+}
+
+export interface OpponentPlay {
+  playerId: string;
+  card: Card;
+}
+
+export interface DrawRequest {
+  playerId: string;
+}
+
+// Orchestrates hand → throw animation → discard pile for both local and
+// opponent plays. Lives inside Canvas so it can access `camera` via useThree.
+function PlayArea({
+  myCards,
+  myPlayerId,
+  opponents,
+  discardPile,
+  drawPileCards,
+  activeSide,
+  handConfig = DEFAULT_HAND_CONFIG,
+  discardConfig = DEFAULT_DISCARD_CONFIG,
+  deckConfig = DEFAULT_DECK_CONFIG,
+  demoDealing,
+  onPlayCard,
+  opponentPlay,
+  onOpponentPlayComplete,
+  drawRequest,
+  onDrawComplete,
+  onDeckClick,
+}: {
+  myCards: Card[];
+  myPlayerId: string;
+  opponents: OpponentSeat[];
+  discardPile: Card[] | undefined;
+  drawPileCards: Card[];
+  activeSide: "light" | "dark";
+  handConfig?: HandConfig;
+  discardConfig?: DiscardConfig;
+  deckConfig?: DeckConfig;
+  demoDealing?: boolean;
+  onPlayCard?: (card: Card) => void;
+  opponentPlay?: OpponentPlay | null;
+  onOpponentPlayComplete?: () => void;
+  drawRequest?: DrawRequest | null;
+  onDrawComplete?: (card: Card, playerId: string) => void;
+  onDeckClick?: (playerId: string) => void;
+}) {
+  const { camera } = useThree();
+  const [throwing, setThrowing] = useState<{
+    card: Card;
+    from: ThrowPose;
+    to: ThrowPose;
+  } | null>(null);
+  const [oppThrowing, setOppThrowing] = useState<{
+    playerId: string;
+    card: Card;
+    from: ThrowPose;
+    to: ThrowPose;
+  } | null>(null);
+  const lastHandledOppPlayRef = useRef<OpponentPlay | null>(null);
+
+  const [drawing, setDrawing] = useState<{
+    playerId: string;
+    card: Card;
+    from: ThrowPose;
+    to: ThrowPose;
+  } | null>(null);
+  const lastHandledDrawRef = useRef<DrawRequest | null>(null);
+
+  const handlePlay = useCallback(
+    (
+      card: Card,
+      fromPose: { position: Vector3; quaternion: Quaternion; scale: number },
+    ) => {
+      if (throwing) return; // ignore extra clicks mid-flight
+      playPickSound();
+      const worldPos = getDiscardWorldPos(camera, discardConfig);
+      const slot = getNextDiscardSlot(discardPile?.length ?? 0);
+      const target = getDiscardTopTransform(
+        card,
+        slot,
+        discardConfig,
+        worldPos,
+      );
+      setThrowing({
+        card,
+        from: fromPose,
+        to: {
+          position: target.position,
+          quaternion: target.quaternion,
+          scale: target.scale,
+        },
+      });
+    },
+    [camera, discardConfig, discardPile, throwing],
+  );
+
+  const handleThrowComplete = useCallback(() => {
+    const finished = throwing;
+    if (!finished) return;
+    playThrowSound();
+    onPlayCard?.(finished.card);
+    requestAnimationFrame(() => setThrowing(null));
+  }, [throwing, onPlayCard]);
+
+  // Kick off opponent throw when the `opponentPlay` prop transitions to a
+  // new value. Uses a ref to avoid re-triggering on unrelated re-renders.
+  useEffect(() => {
+    if (!opponentPlay) return;
+    if (lastHandledOppPlayRef.current === opponentPlay) return;
+    lastHandledOppPlayRef.current = opponentPlay;
+
+    const opp = opponents.find((o) => o.id === opponentPlay.playerId);
+    if (!opp || opp.cards.length === 0) return;
+
+    // Pull the card from its last visible slot (arbitrary but stable).
+    const slotIndex = opp.cards.length - 1;
+    const from = getOpponentCardPose(camera, opp, slotIndex);
+    const worldPos = getDiscardWorldPos(camera, discardConfig);
+    const slot = getNextDiscardSlot(discardPile?.length ?? 0);
+    const target = getDiscardTopTransform(
+      opponentPlay.card,
+      slot,
+      discardConfig,
+      worldPos,
+    );
+    playPickSound();
+    setOppThrowing({
+      playerId: opp.id,
+      card: opponentPlay.card,
+      from,
+      to: {
+        position: target.position,
+        quaternion: target.quaternion,
+        scale: target.scale,
+      },
+    });
+  }, [opponentPlay, opponents, camera, discardConfig, discardPile]);
+
+  const handleOppThrowComplete = useCallback(() => {
+    const finished = oppThrowing;
+    if (!finished) return;
+    playThrowSound();
+    onOpponentPlayComplete?.();
+    requestAnimationFrame(() => setOppThrowing(null));
+  }, [oppThrowing, onOpponentPlayComplete]);
+
+  // Kick off a draw when `drawRequest` transitions to a new value.
+  useEffect(() => {
+    if (!drawRequest) return;
+    if (lastHandledDrawRef.current === drawRequest) return;
+    lastHandledDrawRef.current = drawRequest;
+
+    if (drawPileCards.length === 0) return;
+    // Top of draw pile is the last element of the visible slice
+    const card = drawPileCards[drawPileCards.length - 1];
+    if (!card) return;
+
+    const deckWorld = getDeckWorldPos(camera, deckConfig);
+    const from = getDeckTopTransform(
+      deckConfig,
+      deckWorld,
+      drawPileCards.length,
+    );
+
+    let to: ThrowPose;
+    if (drawRequest.playerId === myPlayerId) {
+      // Land in the next hand slot
+      const nextSlot = myCards.length;
+      const totalAfter = nextSlot + 1;
+      to = getHandSlotTransform(camera, handConfig, nextSlot, totalAfter);
+    } else {
+      const opp = opponents.find((o) => o.id === drawRequest.playerId);
+      if (!opp) return;
+      const nextSlot = opp.cards.length;
+      const totalAfter = nextSlot + 1;
+      to = getOpponentCardPose(
+        camera,
+        { ...opp, cards: [...opp.cards, card] }, // sim count+1 for spacing
+        nextSlot,
+      );
+      void totalAfter;
+    }
+
+    playDrawSound();
+    setDrawing({ playerId: drawRequest.playerId, card, from, to });
+  }, [
+    drawRequest,
+    drawPileCards,
+    camera,
+    deckConfig,
+    handConfig,
+    myCards.length,
+    myPlayerId,
+    opponents,
+  ]);
+
+  const handleDrawComplete = useCallback(() => {
+    const finished = drawing;
+    if (!finished) return;
+    onDrawComplete?.(finished.card, finished.playerId);
+    requestAnimationFrame(() => setDrawing(null));
+  }, [drawing, onDrawComplete]);
+
+  // Hide the thrown card from the local hand while it's flying
+  const visibleHandCards = useMemo(
+    () =>
+      throwing ? myCards.filter((c) => c.id !== throwing.card.id) : myCards,
+    [myCards, throwing],
+  );
+
+  // Filter in-flight cards from opponents' displayed hands (throw or draw source)
+  const visibleOpponents = useMemo(() => {
+    return opponents.map((o) => {
+      let cards = o.cards;
+      if (oppThrowing && o.id === oppThrowing.playerId) {
+        cards = cards.filter((c) => c.id !== oppThrowing.card.id);
+      }
+      return cards === o.cards ? o : { ...o, cards };
+    });
+  }, [opponents, oppThrowing]);
+
+  // Hide the top of the draw pile while a draw is in flight
+  const visibleDrawPileCards = useMemo(() => {
+    if (!drawing) return drawPileCards;
+    return drawPileCards.filter((c) => c.id !== drawing.card.id);
+  }, [drawPileCards, drawing]);
+
+  return (
+    <>
+      {discardPile && discardPile.length > 0 && (
+        <DiscardPile3D
+          cards={discardPile}
+          activeSide={activeSide}
+          config={discardConfig}
+        />
+      )}
+
+      {visibleHandCards.length > 0 && !demoDealing && (
+        <PlayerHand3D
+          cards={visibleHandCards}
+          activeSide={activeSide}
+          config={handConfig}
+          onPlayCard={handlePlay}
+        />
+      )}
+
+      {!demoDealing &&
+        visibleOpponents.map((opp) => (
+          <OpponentHand3D
+            key={opp.id}
+            cards={opp.cards}
+            activeSide={activeSide}
+            screenLeft={opp.screenLeft}
+            screenTop={opp.screenTop}
+          />
+        ))}
+
+      {throwing && (
+        <ThrowCardSequence
+          card={throwing.card}
+          activeSide={activeSide}
+          from={throwing.from}
+          to={throwing.to}
+          onComplete={handleThrowComplete}
+        />
+      )}
+
+      {oppThrowing && (
+        <ThrowCardSequence
+          card={oppThrowing.card}
+          activeSide={activeSide}
+          from={oppThrowing.from}
+          to={oppThrowing.to}
+          onComplete={handleOppThrowComplete}
+        />
+      )}
+
+      {!demoDealing && visibleDrawPileCards.length > 0 && (
+        <DeckPile
+          cards={visibleDrawPileCards}
+          activeSide={activeSide}
+          config={deckConfig}
+          onClick={
+            drawing ? undefined : () => onDeckClick?.(myPlayerId)
+          }
+        />
+      )}
+
+      {drawing && (
+        <ThrowCardSequence
+          card={drawing.card}
+          activeSide={activeSide}
+          from={drawing.from}
+          to={drawing.to}
+          onComplete={handleDrawComplete}
+          duration={0.5}
+          arcHeight={0.9}
+          extraSpin={Math.PI * 0.25}
+        />
+      )}
+    </>
+  );
+}
 
 function CameraSetup() {
   const { camera } = useThree();
@@ -163,17 +540,33 @@ export function ThreeGameScreen({
   hand,
   overrideMyId,
   handConfig,
+  deckConfig,
+  discardConfig,
   demoDealing,
+  onDemoDealingComplete,
   discardPile,
   onPlayCard,
+  opponentPlay,
+  onOpponentPlayComplete,
+  drawRequest,
+  onDrawComplete,
+  onDeckClick,
 }: {
   gameState: GameState;
   hand: PlayerHand | null;
   overrideMyId?: string;
   handConfig?: HandConfig;
+  deckConfig?: DeckConfig;
+  discardConfig?: DiscardConfig;
   demoDealing?: boolean;
+  onDemoDealingComplete?: () => void;
   discardPile?: Card[];
   onPlayCard?: (card: Card) => void;
+  opponentPlay?: OpponentPlay | null;
+  onOpponentPlayComplete?: () => void;
+  drawRequest?: DrawRequest | null;
+  onDrawComplete?: (card: Card, playerId: string) => void;
+  onDeckClick?: (playerId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isDark = gameState.activeSide === "dark";
@@ -201,15 +594,50 @@ export function ThreeGameScreen({
     return result;
   }, [gameState.players]);
 
+  // Draw pile = all 112 cards minus those held by players and on the discard pile.
+  // Trimmed to drawPileCount so the visual deck matches the authoritative count.
+  const drawPileCards = useMemo(() => {
+    const held = new Set<number>();
+    for (const player of gameState.players) {
+      for (const id of player.cardIds) held.add(id);
+    }
+    if (discardPile) {
+      for (const c of discardPile) held.add(c.id);
+    }
+    const remaining = FULL_DECK.filter((c) => !held.has(c.id));
+    return remaining.slice(0, gameState.drawPileCount);
+  }, [gameState.players, gameState.drawPileCount, discardPile]);
+
   // Build opponent list in clockwise order starting from the player after "me"
-  const opponents = [];
-  for (let i = 1; i < gameState.players.length; i++) {
-    const idx = (myIndex + i) % gameState.players.length;
-    opponents.push(gameState.players[idx]);
-  }
+  const opponents = useMemo(() => {
+    const list: (typeof gameState.players)[number][] = [];
+    for (let i = 1; i < gameState.players.length; i++) {
+      const idx = (myIndex + i) % gameState.players.length;
+      const p = gameState.players[idx];
+      if (p) list.push(p);
+    }
+    return list;
+  }, [gameState.players, myIndex]);
 
   const seats = getOpponentPositions(opponents.length);
   const seatsNumeric = getOpponentPositionsNumeric(opponents.length);
+
+  const opponentSeats: OpponentSeat[] = useMemo(
+    () =>
+      opponents
+        .map((opp, i) => {
+          const seat = seatsNumeric[i];
+          if (!opp || !seat) return null;
+          return {
+            id: opp.id,
+            cards: allPlayerCards[opp.id] ?? [],
+            screenLeft: seat.left,
+            screenTop: seat.top,
+          };
+        })
+        .filter((s): s is OpponentSeat => s !== null),
+    [opponents, seatsNumeric, allPlayerCards],
+  );
 
   return (
     <div
@@ -239,6 +667,7 @@ export function ThreeGameScreen({
         >
           <CameraSetup />
           <SceneLighting />
+          <TableLogo />
 
           {/* Demo dealing animation (test page only) */}
           {demoDealing && myCards.length > 0 && (
@@ -265,60 +694,31 @@ export function ThreeGameScreen({
               ]}
               activeSide={gameState.activeSide}
               active
+              onComplete={onDemoDealingComplete}
             />
           )}
 
-          {/* Discard pile */}
-          {discardPile && discardPile.length > 0 && (
-            <DiscardPile3D
-              cards={discardPile}
-              activeSide={gameState.activeSide}
-            />
-          )}
-
-          {/* Player's hand */}
-          {myCards.length > 0 && !demoDealing && (
-            <PlayerHand3D
-              cards={myCards}
-              activeSide={gameState.activeSide}
-              config={handConfig}
-              onPlayCard={onPlayCard}
-            />
-          )}
-
-          {/* Opponent hands — real cards showing inactive side */}
-          {!demoDealing &&
-            opponents.map((opp, i) => {
-              const seat = seatsNumeric[i];
-              if (!seat || !opp) return null;
-              return (
-                <OpponentHand3D
-                  key={opp.id}
-                  cards={allPlayerCards[opp.id] ?? []}
-                  activeSide={gameState.activeSide}
-                  screenLeft={seat.left}
-                  screenTop={seat.top}
-                />
-              );
-            })}
+          {/* Hand + opponents + deck + discard + throw/draw animations */}
+          <PlayArea
+            myCards={myCards}
+            myPlayerId={myId ?? "me"}
+            opponents={opponentSeats}
+            discardPile={discardPile}
+            drawPileCards={drawPileCards}
+            activeSide={gameState.activeSide}
+            handConfig={handConfig}
+            discardConfig={discardConfig}
+            deckConfig={deckConfig}
+            demoDealing={demoDealing}
+            onPlayCard={onPlayCard}
+            opponentPlay={opponentPlay}
+            onOpponentPlayComplete={onOpponentPlayComplete}
+            drawRequest={drawRequest}
+            onDrawComplete={onDrawComplete}
+            onDeckClick={onDeckClick}
+          />
         </Canvas>
       </Suspense>
-
-      {/* ─── UNO logo — center of screen ─── */}
-      <img
-        src="/images/logo.svg"
-        alt="UNO Flip"
-        style={{
-          position: "absolute",
-          top: "50%",
-          left: "50%",
-          transform: "translate(-50%, -50%)",
-          width: "min(20vw, 20vh)",
-          height: "auto",
-          opacity: 0.9,
-          pointerEvents: "none",
-        }}
-      />
 
       {/* ─── Player labels (HTML overlay) ─── */}
 

@@ -1,10 +1,7 @@
 import type { ActiveSide, Card, CardSide } from "@uno-flip/shared";
 import { forwardRef } from "react";
 import type { Group } from "three";
-import {
-  useCardBackTexture,
-  useCardFaceTexture,
-} from "../hooks/useCardTexture.js";
+import { useCardFaceTexture } from "../hooks/useCardTexture.js";
 import { CARD_DEPTH, CARD_HEIGHT, CARD_WIDTH } from "../utils/constants.js";
 
 // ─── Full card (both sides) — used for player hand, dealing, etc. ───
@@ -28,23 +25,13 @@ interface FaceOnlyProps {
   rotation?: [number, number, number];
 }
 
-// ─── Face-down card — used for deck pile, opponent cards ───
-interface FaceDownProps {
-  faceDown: true;
-  position?: [number, number, number];
-  rotation?: [number, number, number];
-}
-
-type Card3DProps = FullCardProps | FaceOnlyProps | FaceDownProps;
+type Card3DProps = FullCardProps | FaceOnlyProps;
 
 // BoxGeometry material order: +X, -X, +Y, -Y, +Z (front), -Z (back)
 // +Z = light side, -Z = dark side
 // When activeSide is "light", light faces camera. When "dark", card is rotated 180°.
 export const Card3D = forwardRef<Group, Card3DProps>(
   function Card3D(props, ref) {
-    if ("faceDown" in props) {
-      return <FaceDownCard ref={ref} {...props} />;
-    }
     if ("card" in props) {
       return <FullCard ref={ref} {...props} />;
     }
@@ -138,34 +125,3 @@ const FaceOnlyCard = forwardRef<Group, FaceOnlyProps>(function FaceOnlyCard(
   );
 });
 
-// ─── Face-down card (deck, opponent hands) ───
-const FaceDownCard = forwardRef<Group, FaceDownProps>(function FaceDownCard(
-  { position = [0, 0, 0], rotation = [0, 0, 0] },
-  ref,
-) {
-  const backTexture = useCardBackTexture();
-
-  return (
-    <group ref={ref} position={position} rotation={rotation}>
-      <mesh castShadow>
-        <boxGeometry args={[CARD_WIDTH, CARD_HEIGHT, CARD_DEPTH]} />
-        <meshStandardMaterial attach="material-0" transparent opacity={0} />
-        <meshStandardMaterial attach="material-1" transparent opacity={0} />
-        <meshStandardMaterial attach="material-2" transparent opacity={0} />
-        <meshStandardMaterial attach="material-3" transparent opacity={0} />
-        <meshBasicMaterial
-          attach="material-4"
-          map={backTexture}
-          transparent
-          alphaTest={0.5}
-        />
-        <meshBasicMaterial
-          attach="material-5"
-          map={backTexture}
-          transparent
-          alphaTest={0.5}
-        />
-      </mesh>
-    </group>
-  );
-});
