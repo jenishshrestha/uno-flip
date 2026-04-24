@@ -1,6 +1,6 @@
 import { Canvas, useThree } from "@react-three/fiber";
 import type { Card, GameState, PlayerHand } from "@uno-flip/shared";
-import { DECK_MAP, FULL_DECK } from "@uno-flip/shared";
+import { canPlayCard, DECK_MAP, FULL_DECK } from "@uno-flip/shared";
 import {
   Suspense,
   useCallback,
@@ -21,6 +21,7 @@ import {
 import { DealSequence } from "./components/DealSequence.js";
 import type { DeckConfig } from "./components/DeckPile.js";
 import {
+  DEFAULT_DECK_CONFIG,
   DeckPile,
   getDeckTopTransform,
   getDeckWorldPos,
@@ -36,6 +37,7 @@ import {
 import { OpponentHand3D } from "./components/OpponentHand3D.js";
 import type { HandConfig } from "./components/PlayerHand3D.js";
 import {
+  DEFAULT_HAND_CONFIG,
   getHandSlotTransform,
   PlayerHand3D,
 } from "./components/PlayerHand3D.js";
@@ -56,11 +58,14 @@ const OPP_CARD_SCALE = 0.5;
 
 // Compute where the top of an opponent's hand is in world space + the pose of
 // a specific card slot. Mirrors OpponentHand3D exactly so the throw starts
-// from where the card visually sits.
+// from where the card visually sits. Opponents show the INACTIVE side (the
+// side the card is actually facing away from the player on the table), so the
+// Y flip is inverted relative to the hand/deck/discard.
 function getOpponentCardPose(
   camera: Camera,
   opp: OpponentSeat,
   slotIndex: number,
+  activeSide: "light" | "dark" = "light",
 ): ThrowPose {
   const ndcX = (opp.screenLeft / 100) * 2 - 1;
   const ndcY = -((opp.screenTop / 100) * 2 - 1);
@@ -80,7 +85,8 @@ function getOpponentCardPose(
     0.01 + slotIndex * 0.002,
     hit.z + 0.8,
   );
-  const quaternion = new Quaternion().setFromEuler(new Euler(-1.5, Math.PI, 0));
+  const sideY = activeSide === "light" ? Math.PI : 0;
+  const quaternion = new Quaternion().setFromEuler(new Euler(-1.5, sideY, 0));
   return { position, quaternion, scale: OPP_CARD_SCALE };
 }
 
@@ -98,6 +104,11 @@ export interface OpponentPlay {
 
 export interface DrawRequest {
   playerId: string;
+  // The actual card ID the server says was drawn. Required so the draw
+  // animation carries the real card instead of whatever the client-side
+  // deck happens to have on top (those two don't correspond — the client
+  // computes the draw pile from FULL_DECK order, not the server's shuffle).
+  cardId: number;
 }
 
 // Orchestrates hand → throw animation → discard pile for both local and
@@ -113,6 +124,8 @@ function PlayArea({
   discardConfig = DEFAULT_DISCARD_CONFIG,
   deckConfig = DEFAULT_DECK_CONFIG,
   demoDealing,
+  playableIds,
+  playableTranslate,
   onPlayCard,
   opponentPlay,
   onOpponentPlayComplete,
@@ -130,6 +143,8 @@ function PlayArea({
   discardConfig?: DiscardConfig;
   deckConfig?: DeckConfig;
   demoDealing?: boolean;
+  playableIds?: ReadonlySet<number>;
+  playableTranslate?: [number, number, number];
   onPlayCard?: (card: Card) => void;
   opponentPlay?: OpponentPlay | null;
   onOpponentPlayComplete?: () => void;
@@ -173,6 +188,7 @@ function PlayArea({
         slot,
         discardConfig,
         worldPos,
+        activeSide,
       );
       setThrowing({
         card,
@@ -184,7 +200,7 @@ function PlayArea({
         },
       });
     },
-    [camera, discardConfig, discardPile, throwing],
+    [camera, discardConfig, discardPile, throwing, activeSide],
   );
 
   const handleThrowComplete = useCallback(() => {
@@ -207,7 +223,7 @@ function PlayArea({
 
     // Pull the card from its last visible slot (arbitrary but stable).
     const slotIndex = opp.cards.length - 1;
-    const from = getOpponentCardPose(camera, opp, slotIndex);
+    const from = getOpponentCardPose(camera, opp, slotIndex, activeSide);
     const worldPos = getDiscardWorldPos(camera, discardConfig);
     const slot = getNextDiscardSlot(discardPile?.length ?? 0);
     const target = getDiscardTopTransform(
@@ -215,6 +231,7 @@ function PlayArea({
       slot,
       discardConfig,
       worldPos,
+      activeSide,
     );
     playPickSound();
     setOppThrowing({
@@ -227,7 +244,7 @@ function PlayArea({
         scale: target.scale,
       },
     });
-  }, [opponentPlay, opponents, camera, discardConfig, discardPile]);
+  }, [opponentPlay, opponents, camera, discardConfig, discardPile, activeSide]);
 
   const handleOppThrowComplete = useCallback(() => {
     const finished = oppThrowing;
@@ -243,9 +260,8 @@ function PlayArea({
     if (lastHandledDrawRef.current === drawRequest) return;
     lastHandledDrawRef.current = drawRequest;
 
-    if (drawPileCards.length === 0) return;
-    // Top of draw pile is the last element of the visible slice
-    const card = drawPileCards[drawPileCards.length - 1];
+    // Animate the actual server-drawn card, not the client's faked top.
+    const card = DECK_MAP.get(drawRequest.cardId);
     if (!card) return;
 
     const deckWorld = getDeckWorldPos(camera, deckConfig);
@@ -253,6 +269,7 @@ function PlayArea({
       deckConfig,
       deckWorld,
       drawPileCards.length,
+      activeSide,
     );
 
     let to: ThrowPose;
@@ -260,7 +277,13 @@ function PlayArea({
       // Land in the next hand slot
       const nextSlot = myCards.length;
       const totalAfter = nextSlot + 1;
-      to = getHandSlotTransform(camera, handConfig, nextSlot, totalAfter);
+      to = getHandSlotTransform(
+        camera,
+        handConfig,
+        nextSlot,
+        totalAfter,
+        activeSide,
+      );
     } else {
       const opp = opponents.find((o) => o.id === drawRequest.playerId);
       if (!opp) return;
@@ -270,6 +293,7 @@ function PlayArea({
         camera,
         { ...opp, cards: [...opp.cards, card] }, // sim count+1 for spacing
         nextSlot,
+        activeSide,
       );
       void totalAfter;
     }
@@ -285,6 +309,7 @@ function PlayArea({
     myCards.length,
     myPlayerId,
     opponents,
+    activeSide,
   ]);
 
   const handleDrawComplete = useCallback(() => {
@@ -312,10 +337,13 @@ function PlayArea({
     });
   }, [opponents, oppThrowing]);
 
-  // Hide the top of the draw pile while a draw is in flight
+  // Hide the top of the draw pile while a draw is in flight. The client's
+  // draw pile doesn't correspond to the server's real shuffle (it's just
+  // FULL_DECK minus held), so we can't filter by the drawing card's id —
+  // instead just drop the last rendered card to shrink the stack by one.
   const visibleDrawPileCards = useMemo(() => {
     if (!drawing) return drawPileCards;
-    return drawPileCards.filter((c) => c.id !== drawing.card.id);
+    return drawPileCards.slice(0, -1);
   }, [drawPileCards, drawing]);
 
   return (
@@ -333,6 +361,8 @@ function PlayArea({
           cards={visibleHandCards}
           activeSide={activeSide}
           config={handConfig}
+          playableIds={playableIds}
+          playableTranslate={playableTranslate}
           onPlayCard={handlePlay}
         />
       )}
@@ -373,9 +403,7 @@ function PlayArea({
           cards={visibleDrawPileCards}
           activeSide={activeSide}
           config={deckConfig}
-          onClick={
-            drawing ? undefined : () => onDeckClick?.(myPlayerId)
-          }
+          onClick={drawing ? undefined : () => onDeckClick?.(myPlayerId)}
         />
       )}
 
@@ -551,6 +579,10 @@ export function ThreeGameScreen({
   drawRequest,
   onDrawComplete,
   onDeckClick,
+  showPass,
+  onPass,
+  onCatchUno,
+  playableTranslate,
 }: {
   gameState: GameState;
   hand: PlayerHand | null;
@@ -567,6 +599,10 @@ export function ThreeGameScreen({
   drawRequest?: DrawRequest | null;
   onDrawComplete?: (card: Card, playerId: string) => void;
   onDeckClick?: (playerId: string) => void;
+  showPass?: boolean;
+  onPass?: () => void;
+  onCatchUno?: (targetPlayerId: string) => void;
+  playableTranslate?: [number, number, number];
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isDark = gameState.activeSide === "dark";
@@ -583,6 +619,29 @@ export function ThreeGameScreen({
       .filter((c): c is Card => c !== undefined);
   }, [hand]);
 
+  // Which of my cards can legally be played on the current discard top.
+  // Empty when it's not my turn, the phase isn't "playing", or no discard top.
+  const playableIds = useMemo(() => {
+    const canAct = currentPlayerId === myId && gameState.phase === "playing";
+    if (!canAct || !gameState.discardTop) return new Set<number>();
+    const top = gameState.discardTop;
+    return new Set(
+      myCards
+        .filter((c) =>
+          canPlayCard(c, top, gameState.activeSide, gameState.chosenColor),
+        )
+        .map((c) => c.id),
+    );
+  }, [
+    myCards,
+    currentPlayerId,
+    myId,
+    gameState.phase,
+    gameState.discardTop,
+    gameState.activeSide,
+    gameState.chosenColor,
+  ]);
+
   // Resolve all players' cards from IDs (from PublicPlayer.cardIds)
   const allPlayerCards = useMemo(() => {
     const result: Record<string, Card[]> = {};
@@ -594,19 +653,33 @@ export function ThreeGameScreen({
     return result;
   }, [gameState.players]);
 
-  // Draw pile = all 112 cards minus those held by players and on the discard pile.
-  // Trimmed to drawPileCount so the visual deck matches the authoritative count.
+  // Draw pile visualization. Only the TOP card's identity is known (the
+  // server exposes it via gameState.drawPileTopCardId); the rest of the
+  // deck stays private. We still render a stack of `drawPileCount` cards
+  // so it visually reads as a thick pile, but every card below the top is
+  // a placeholder (its dark face is what the user would see on the edges
+  // of a real face-down pile anyway). Each placeholder gets a unique
+  // negative ID to avoid React-key collisions with the real top card.
   const drawPileCards = useMemo(() => {
-    const held = new Set<number>();
-    for (const player of gameState.players) {
-      for (const id of player.cardIds) held.add(id);
+    const count = gameState.drawPileCount;
+    if (count === 0) return [];
+    const topCard =
+      gameState.drawPileTopCardId != null
+        ? (DECK_MAP.get(gameState.drawPileTopCardId) ?? null)
+        : null;
+    const placeholder = FULL_DECK[0];
+    if (!placeholder) return [];
+    const stack: Card[] = [];
+    for (let i = 0; i < count; i++) {
+      const isTop = i === count - 1;
+      if (isTop && topCard) {
+        stack.push(topCard);
+      } else {
+        stack.push({ ...placeholder, id: -i - 1 });
+      }
     }
-    if (discardPile) {
-      for (const c of discardPile) held.add(c.id);
-    }
-    const remaining = FULL_DECK.filter((c) => !held.has(c.id));
-    return remaining.slice(0, gameState.drawPileCount);
-  }, [gameState.players, gameState.drawPileCount, discardPile]);
+    return stack;
+  }, [gameState.drawPileCount, gameState.drawPileTopCardId]);
 
   // Build opponent list in clockwise order starting from the player after "me"
   const opponents = useMemo(() => {
@@ -710,6 +783,8 @@ export function ThreeGameScreen({
             discardConfig={discardConfig}
             deckConfig={deckConfig}
             demoDealing={demoDealing}
+            playableIds={playableIds}
+            playableTranslate={playableTranslate}
             onPlayCard={onPlayCard}
             opponentPlay={opponentPlay}
             onOpponentPlayComplete={onOpponentPlayComplete}
@@ -755,6 +830,32 @@ export function ThreeGameScreen({
           {gameState.players[myIndex]?.name ?? "You"}
         </span>
       </div>
+
+      {/* Pass button — shown when the player just drew a playable card */}
+      {showPass && (
+        <button
+          type="button"
+          onClick={() => onPass?.()}
+          style={{
+            position: "absolute",
+            bottom: "3%",
+            right: "calc(3% + 140px)",
+            padding: "12px 22px",
+            fontSize: 16,
+            fontWeight: "bold",
+            borderRadius: 50,
+            border: "none",
+            backgroundColor: "#555",
+            color: "white",
+            cursor: "pointer",
+            boxShadow: "0 4px 16px rgba(0, 0, 0, 0.35)",
+            letterSpacing: 1,
+            fontFamily: "system-ui",
+          }}
+        >
+          Pass
+        </button>
+      )}
 
       {/* UNO button — bottom right */}
       <button
@@ -844,6 +945,28 @@ export function ThreeGameScreen({
                 UNO!
               </span>
             )}
+            {opp.cardCount === 1 &&
+              !opp.isUno &&
+              gameState.phase === "playing" && (
+                <button
+                  type="button"
+                  onClick={() => onCatchUno?.(opp.id)}
+                  style={{
+                    marginTop: 2,
+                    padding: "2px 10px",
+                    fontSize: 11,
+                    fontWeight: "bold",
+                    borderRadius: 4,
+                    border: "none",
+                    backgroundColor: "#f39c12",
+                    color: "white",
+                    cursor: "pointer",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  CATCH!
+                </button>
+              )}
           </div>
         );
       })}

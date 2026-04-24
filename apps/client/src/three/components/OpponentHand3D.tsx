@@ -57,9 +57,12 @@ export function OpponentHand3D({
     }));
   }, [cards.length, worldPos]);
 
-  // Fan-flip animation: stack → flip → fan (same as player hand)
+  // Fan-flip animation: stack → flip → fan (same as player hand).
+  // baseY = π because opponents show their INACTIVE side across the table
+  // (they hold cards light-side-toward-themselves, so in light mode we see
+  // the dark back; in dark mode we see the light back).
   const getPositions = useCallback(() => positions, [positions]);
-  useFanFlipAnimation(cardRefs, activeSide, getPositions);
+  useFanFlipAnimation(cardRefs, activeSide, getPositions, { baseY: Math.PI });
 
   // Hover animation
   useEffect(() => {
@@ -140,7 +143,7 @@ export function OpponentHand3D({
               cardRefs.current[i] = el;
             }}
             position={[pos.x, pos.y, pos.z]}
-            rotation={[-1.5, Math.PI, 0]}
+            rotation={[-1.5, 0, 0]}
             scale={CARD_SCALE}
             onPointerEnter={(e) => {
               e.stopPropagation();

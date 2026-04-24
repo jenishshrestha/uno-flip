@@ -32,6 +32,11 @@ export interface GameState {
   direction: Direction;
   players: PublicPlayer[];
   drawPileCount: number;
+  // Card ID of the top of the draw pile, or null when empty. The rest of
+  // the deck stays private on the server; only the visible top is exposed
+  // (per UNO Flip's physical setup where the top card's inactive face is
+  // visible to all players).
+  drawPileTopCardId: number | null;
   hostId: string;
   chosenColor: string | null;
   challengeTarget: string | null;

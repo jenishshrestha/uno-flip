@@ -62,11 +62,14 @@ function cardJitter(cardId: number) {
 // World-space pose a card lands at when it reaches the top of the pile.
 // `incomingIndex` is the index that card will occupy in the visible slice
 // once committed (typically Math.min(currentPileLength, MAX_VISIBLE - 1)).
+// The card rotates 180° around its local Y in dark mode so the correct face
+// (matching the currently-active side) points toward the camera.
 export function getDiscardTopTransform(
   card: Card,
   incomingIndex: number,
   config: DiscardConfig,
   worldPos: { x: number; z: number },
+  activeSide: ActiveSide = "light",
 ): { position: Vector3; quaternion: Quaternion; scale: number } {
   const { spin, offX, offY } = cardJitter(card.id);
   const groupQuat = new Quaternion().setFromEuler(
@@ -77,7 +80,8 @@ export function getDiscardTopTransform(
     offY,
     incomingIndex * STACK_GAP,
   ).multiplyScalar(config.scale);
-  const cardQuat = new Quaternion().setFromEuler(new Euler(0, 0, spin));
+  const sideY = activeSide === "dark" ? Math.PI : 0;
+  const cardQuat = new Quaternion().setFromEuler(new Euler(0, sideY, spin));
   const position = new Vector3(worldPos.x, 0, worldPos.z).add(
     localPos.applyQuaternion(groupQuat),
   );
@@ -119,13 +123,14 @@ export function DiscardPile3D({
     >
       {visibleCards.map((card, i) => {
         const { spin, offX, offY } = cardJitter(card.id);
+        const sideY = activeSide === "dark" ? Math.PI : 0;
         return (
           <Card3D
             key={card.id}
             card={card}
             activeSide={activeSide}
             position={[offX, offY, i * STACK_GAP]}
-            rotation={[0, 0, spin]}
+            rotation={[0, sideY, spin]}
           />
         );
       })}

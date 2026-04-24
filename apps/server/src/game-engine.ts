@@ -8,7 +8,7 @@ import type {
   GameState,
   PublicPlayer,
 } from "@uno-flip/shared";
-import { GAME_RULES } from "@uno-flip/shared";
+import { canPlayCard, GAME_RULES, isWildDrawLegal } from "@uno-flip/shared";
 import { drawUntilColor, forceDrawCards, resolveAction } from "./actions.js";
 import {
   createDeck,
@@ -19,7 +19,6 @@ import {
   getDiscardTop,
 } from "./deck.js";
 import { calculateRoundScores, totalWinnerPoints } from "./scoring.js";
-import { canPlayCard, isWildDrawLegal } from "./validators.js";
 
 // ─── Internal game state (server only) ───
 export interface GameInstance {
@@ -681,6 +680,7 @@ export function getPublicGameState(
     };
   });
 
+  const drawPileTop = game.deck.drawPile[game.deck.drawPile.length - 1];
   return {
     phase: game.phase,
     activeSide: game.activeSide,
@@ -689,6 +689,7 @@ export function getPublicGameState(
     direction: game.direction,
     players,
     drawPileCount: game.deck.drawPile.length,
+    drawPileTopCardId: drawPileTop?.id ?? null,
     hostId,
     chosenColor: game.chosenColor,
     challengeTarget: game.challengeTarget,

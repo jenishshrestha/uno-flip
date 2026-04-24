@@ -1,18 +1,24 @@
 import type {
   Card,
+  DarkColor,
   GameState,
+  LightColor,
   PlayerHand,
   PublicPlayer,
 } from "@uno-flip/shared";
-import { DECK_MAP } from "@uno-flip/shared";
-import { useEffect, useState } from "react";
+import { canPlayCard, DECK_MAP } from "@uno-flip/shared";
+import { useCallback, useEffect, useState } from "react";
 import { Toaster, toast } from "sonner";
 import "./App.css";
 import { ScoreScreen } from "./screens/ScoreScreen.js";
 import { SERVER_URL, socket } from "./socket.js";
 import { playUnoSound } from "./sounds.js";
 import { styles } from "./styles.js";
+import { ChallengeOverlay } from "./three/overlays/ChallengeOverlay.js";
+import { ColorPickerOverlay } from "./three/overlays/ColorPickerOverlay.js";
+import { FlipOverlay } from "./three/overlays/FlipOverlay.js";
 import { TestScene } from "./three/TestScene.js";
+import type { DrawRequest, OpponentPlay } from "./three/ThreeGameScreen.js";
 import { ThreeGameScreen } from "./three/ThreeGameScreen.js";
 
 function getHash() {
@@ -33,8 +39,19 @@ function App() {
   const [roomValid, setRoomValid] = useState<boolean | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [hand, setHand] = useState<PlayerHand | null>(null);
+  const [discardPile, setDiscardPile] = useState<Card[]>([]);
+  const [opponentPlay, setOpponentPlay] = useState<OpponentPlay | null>(null);
+  const [drawRequest, setDrawRequest] = useState<DrawRequest | null>(null);
+  const [flipShowing, setFlipShowing] = useState(false);
+  // Non-null while it's my turn AND I just drew a card that is legal to play.
+  // Presence of this value is what drives the `Pass` button visibility.
+  const [pendingDrawnCardId, setPendingDrawnCardId] = useState<number | null>(
+    null,
+  );
 
   const isHost = hostId === socket.id;
+  const currentPlayerId =
+    gameState?.players[gameState.currentPlayerIndex]?.id ?? null;
 
   useEffect(() => {
     const onHashChange = () => {
@@ -89,22 +106,67 @@ function App() {
       setPlayers(gs.players);
       setHostId(gs.hostId);
       setJoined(true);
+      // Clear transient animation state when returning to lobby / between rounds
+      if (gs.phase === "lobby" || gs.phase === "dealing") {
+        setDiscardPile([]);
+        setOpponentPlay(null);
+        setDrawRequest(null);
+        setPendingDrawnCardId(null);
+      }
+      // If the turn has moved off me, the pending draw no longer applies.
+      const activeId = gs.players[gs.currentPlayerIndex]?.id;
+      if (activeId !== socket.id) setPendingDrawnCardId(null);
     });
 
     socket.on("HAND_UPDATE", ({ hand: h }) => {
       setHand(h);
     });
 
+    socket.on("DEAL_CARDS", ({ discardTopCardId }) => {
+      const top = DECK_MAP.get(discardTopCardId);
+      setDiscardPile(top ? [top] : []);
+    });
+
     socket.on("CARD_PLAYED", ({ playerId, cardId }) => {
-      const name = players.find((p) => p.id === playerId)?.name ?? "Someone";
       const card = DECK_MAP.get(cardId);
-      if (playerId !== socket.id && card) {
-        const face = gameState?.activeSide === "light" ? card.light : card.dark;
-        toast(`${name} played ${face.value}`);
+      if (!card) return;
+      if (playerId === socket.id) {
+        // Our own play — local animation + optimistic commit already handled.
+        return;
+      }
+      // Opponent play — trigger throw animation; discard pile is appended
+      // when the animation completes (see handleOpponentPlayComplete).
+      // No toast — the played card is visible landing on the discard pile.
+      setOpponentPlay({ playerId, card });
+    });
+
+    socket.on("CARD_DRAWN", ({ playerId, cardId }) => {
+      // Trigger a draw animation for whoever drew (local or opponent).
+      setDrawRequest({ playerId, cardId });
+      // If I drew and the card is legal on the current discard top, I now
+      // have the option to play it or pass. The server keeps the turn with
+      // me until I do one of those.
+      if (playerId === socket.id) {
+        const card = DECK_MAP.get(cardId);
+        const top = gameState?.discardTop;
+        if (
+          card &&
+          top &&
+          canPlayCard(card, top, gameState.activeSide, gameState.chosenColor)
+        ) {
+          setPendingDrawnCardId(cardId);
+        } else {
+          setPendingDrawnCardId(null);
+        }
       }
     });
 
     socket.on("FLIP_EVENT", () => {
+      // Server reverses its discard pile on flip — mirror that client-side
+      // so the top card and stacking order stay in sync.
+      setDiscardPile((prev) => [...prev].reverse());
+      setFlipShowing(true);
+      setTimeout(() => setFlipShowing(false), 1200);
       toast("FLIP! All cards flipped!");
     });
 
@@ -147,6 +209,12 @@ function App() {
 
     socket.on("ERROR", ({ message }) => {
       toast.error(message);
+      // Roll back an optimistic play if the server rejected it.
+      // Client-side validation should prevent this in normal play, but the
+      // safety net keeps the visual discard pile consistent if anything slips.
+      if (message === "Can't play that card" || message === "Not your turn") {
+        setDiscardPile((prev) => prev.slice(0, -1));
+      }
     });
 
     return () => {
@@ -157,7 +225,9 @@ function App() {
       socket.off("PLAYER_LEFT");
       socket.off("GAME_STATE");
       socket.off("HAND_UPDATE");
+      socket.off("DEAL_CARDS");
       socket.off("CARD_PLAYED");
+      socket.off("CARD_DRAWN");
       socket.off("FLIP_EVENT");
       socket.off("UNO_CALLED");
       socket.off("UNO_CAUGHT");
@@ -167,6 +237,46 @@ function App() {
       socket.off("ERROR");
     };
   }, [players, gameState]);
+
+  // Local play: the throw animation just landed — emit the play to the server
+  // and commit the card to our local discard pile so the pile visually
+  // retains it during the brief round-trip before the server echoes back.
+  const handleLocalPlayCard = useCallback((card: Card) => {
+    socket.emit("PLAY_CARD", { cardId: card.id });
+    setDiscardPile((prev) => [...prev, card]);
+    setPendingDrawnCardId(null);
+  }, []);
+
+  const handlePass = useCallback(() => {
+    socket.emit("PASS_TURN");
+    setPendingDrawnCardId(null);
+  }, []);
+
+  const handleCatchUno = useCallback((targetPlayerId: string) => {
+    socket.emit("CATCH_UNO", { targetPlayerId });
+  }, []);
+
+  // Opponent throw animation finished — commit the flying card to the pile.
+  const handleOpponentPlayComplete = useCallback(() => {
+    setOpponentPlay((current) => {
+      if (!current) return null;
+      setDiscardPile((prev) => [...prev, current.card]);
+      return null;
+    });
+  }, []);
+
+  const handleDrawComplete = useCallback(() => {
+    setDrawRequest(null);
+  }, []);
+
+  const handleDeckClick = useCallback((playerId: string) => {
+    // Only the acting player can request a draw; server validates turn anyway.
+    if (playerId === socket.id) socket.emit("DRAW_CARD");
+  }, []);
+
+  const handleColorSelect = useCallback((color: LightColor | DarkColor) => {
+    socket.emit("SELECT_COLOR", { color });
+  }, []);
 
   // ─── SCORE SCREEN ───
   if (
@@ -188,10 +298,36 @@ function App() {
     gameState.phase !== "dealing" &&
     hand
   ) {
+    const isMyTurn = currentPlayerId === socket.id;
     return (
       <>
         <Toaster position="top-center" theme="dark" />
-        <ThreeGameScreen gameState={gameState} hand={hand} />
+        <ThreeGameScreen
+          gameState={gameState}
+          hand={hand}
+          discardPile={discardPile}
+          onPlayCard={handleLocalPlayCard}
+          opponentPlay={opponentPlay}
+          onOpponentPlayComplete={handleOpponentPlayComplete}
+          drawRequest={drawRequest}
+          onDrawComplete={handleDrawComplete}
+          onDeckClick={handleDeckClick}
+          showPass={isMyTurn && pendingDrawnCardId !== null}
+          onPass={handlePass}
+          onCatchUno={handleCatchUno}
+        />
+        <ColorPickerOverlay
+          show={gameState.phase === "choosing_color" && isMyTurn}
+          activeSide={gameState.activeSide}
+          onSelect={handleColorSelect}
+        />
+        <ChallengeOverlay
+          show={
+            gameState.phase === "awaiting_challenge" &&
+            gameState.challengeTarget === socket.id
+          }
+        />
+        <FlipOverlay show={flipShowing} />
       </>
     );
   }

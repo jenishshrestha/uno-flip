@@ -18,6 +18,19 @@ const FAKE_NAMES = [
   "Ivy",
 ];
 
+// Player-0's hand in the test scene — fixed 7-card composition for
+// validating the hand layout. Position 1/4/6/7 are Wilds so that against
+// the blue-1 mock discard top only the wilds register as playable.
+const TEST_HAND_LIGHT: Array<(card: (typeof FULL_DECK)[number]) => boolean> = [
+  (c) => c.light.value === "wild",
+  (c) => c.light.color === "yellow" && c.light.value === 3,
+  (c) => c.light.color === "red" && c.light.value === 5,
+  (c) => c.light.value === "wild",
+  (c) => c.light.color === "yellow" && c.light.value === 8,
+  (c) => c.light.value === "wild",
+  (c) => c.light.value === "wild",
+];
+
 export function TestScene() {
   const [activeSide, setActiveSide] = useState<"light" | "dark">("light");
   const [shouldDeal, setShouldDeal] = useState(false);
@@ -100,19 +113,46 @@ export function TestScene() {
     tiltZ: { value: 0, min: -Math.PI, max: Math.PI, step: 0.05 },
   });
 
-  // Deal cards from the real deck to all players (round-robin)
-  const playerHands = useMemo(() => {
-    const deck = [...FULL_DECK].slice(deckOffset);
-    const hands: Record<string, number[]> = {};
+  // CSS-style local translate, applied in the card's own frame (after tilt).
+  // Defaults match the production value so #/test mirrors the real game.
+  const { translateX, translateY, translateZ } = useControls(
+    "Playable translate",
+    {
+      translateX: { value: 0, min: -2, max: 2, step: 0.01 },
+      translateY: { value: 0.15, min: -2, max: 2, step: 0.01 },
+      translateZ: { value: 0, min: -2, max: 2, step: 0.01 },
+    },
+  );
+  const playableTranslate: [number, number, number] = useMemo(
+    () => [translateX, translateY, translateZ],
+    [translateX, translateY, translateZ],
+  );
 
-    for (let p = 0; p < playerCount; p++) {
+  // Deal cards: player-0 gets the fixed test hand, others get round-robin
+  // off the remaining deck.
+  const playerHands = useMemo(() => {
+    const handZero: number[] = [];
+    const used = new Set<number>();
+    for (const match of TEST_HAND_LIGHT) {
+      const found = FULL_DECK.find((c) => !used.has(c.id) && match(c));
+      if (found) {
+        handZero.push(found.id);
+        used.add(found.id);
+      }
+    }
+
+    const remaining = FULL_DECK.filter((c) => !used.has(c.id)).slice(
+      deckOffset,
+    );
+    const hands: Record<string, number[]> = { "player-0": handZero };
+    for (let p = 1; p < playerCount; p++) {
       hands[`player-${p}`] = [];
     }
 
     let deckIndex = 0;
     for (let round = 0; round < cardCount; round++) {
-      for (let p = 0; p < playerCount; p++) {
-        const card = deck[deckIndex];
+      for (let p = 1; p < playerCount; p++) {
+        const card = remaining[deckIndex];
         if (card) {
           hands[`player-${p}`]?.push(card.id);
         }
@@ -122,14 +162,30 @@ export function TestScene() {
     return hands;
   }, [cardCount, deckOffset, playerCount]);
 
-  const mockGameState: GameState = useMemo(
-    () => ({
+  const mockGameState: GameState = useMemo(() => {
+    // Compute the deck "top" as the first FULL_DECK card not currently held
+    // or discarded — simulates what the server would expose.
+    const held = new Set<number>();
+    for (const ids of Object.values(playerHands)) {
+      for (const id of ids ?? []) held.add(id);
+    }
+    for (const ids of Object.values(extraCardIds)) {
+      for (const id of ids ?? []) held.add(id);
+    }
+    for (const c of discardPile) held.add(c.id);
+    for (const id of removedCardIds) held.add(id);
+    const topCard = FULL_DECK.find((c) => !held.has(c.id));
+
+    return {
       phase: "playing",
       activeSide,
-      discardTop: { color: "yellow", value: 5 as CardValue },
+      // Chosen so only the wild cards in TEST_HAND_LIGHT qualify as playable.
+      // Wilds are always playable; blue-1 doesn't match yellow-3 / red-5 / yellow-8.
+      discardTop: { color: "blue", value: 1 as CardValue },
       currentPlayerIndex: currentTurn % playerCount,
       direction: "clockwise",
       drawPileCount: 112 - playerCount * cardCount - 1,
+      drawPileTopCardId: topCard?.id ?? null,
       hostId: "player-0",
       chosenColor: null,
       challengeTarget: null,
@@ -151,17 +207,17 @@ export function TestScene() {
           connected: true,
         };
       }),
-    }),
-    [
-      playerCount,
-      activeSide,
-      cardCount,
-      currentTurn,
-      playerHands,
-      removedCardIds,
-      extraCardIds,
-    ],
-  );
+    };
+  }, [
+    playerCount,
+    activeSide,
+    cardCount,
+    currentTurn,
+    playerHands,
+    removedCardIds,
+    extraCardIds,
+    discardPile,
+  ]);
 
   const mockHand: PlayerHand = useMemo(
     () => ({
@@ -198,9 +254,22 @@ export function TestScene() {
   const triggerDraw = useCallback(
     (playerId: string) => {
       if (drawRequest) return;
-      setDrawRequest({ playerId });
+      // Pick a card not currently held by any player or on the discard pile,
+      // simulating what the server would send via CARD_DRAWN.
+      const held = new Set<number>();
+      for (const ids of Object.values(playerHands)) {
+        for (const id of ids ?? []) held.add(id);
+      }
+      for (const ids of Object.values(extraCardIds)) {
+        for (const id of ids ?? []) held.add(id);
+      }
+      for (const c of discardPile) held.add(c.id);
+      for (const id of removedCardIds) held.add(id);
+      const next = FULL_DECK.find((c) => !held.has(c.id));
+      if (!next) return;
+      setDrawRequest({ playerId, cardId: next.id });
     },
-    [drawRequest],
+    [drawRequest, playerHands, extraCardIds, discardPile, removedCardIds],
   );
 
   // Trigger a simulated opponent play — picks a random opponent with cards
@@ -243,6 +312,7 @@ export function TestScene() {
         drawRequest={drawRequest}
         onDrawComplete={handleDrawComplete}
         onDeckClick={triggerDraw}
+        playableTranslate={playableTranslate}
       />
     </>
   );

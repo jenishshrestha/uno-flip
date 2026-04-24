@@ -1,4 +1,4 @@
-import type { ActiveSide, Card, CardSide } from "@uno-flip/shared";
+import type { ActiveSide, Card, CardSide } from "./types/card.js";
 
 // ─── Can this card be played on the current discard top? ───
 export function canPlayCard(

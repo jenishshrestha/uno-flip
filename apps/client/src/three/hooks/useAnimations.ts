@@ -63,36 +63,77 @@ export function useFlipOnSideChange(
 // ─── Fan-Flip Animation ───
 // For a hand of cards: fan → stack → flip 180° → fan back out.
 // Each card rotates individually around its own Y axis (no group rotation).
-// Triggers on activeSide change.
+//
+// The hook owns `rotation.y` for every ref it's given. On first mount it
+// snaps refs to the side-appropriate rotation (no animation) so the hand
+// renders correctly even when the game begins in dark mode. When the cards
+// array grows mid-game (card drawn), it snaps any new refs to match. On a
+// true activeSide change it runs the stack → flip → fan animation.
+//
+// `baseY` is the Y rotation a card should have when `activeSide === "light"`.
+// - PlayerHand3D: 0 (light face toward camera).
+// - OpponentHand3D: Math.PI (dark face toward camera, because opponents show
+//   their inactive side across the table).
 export function useFanFlipAnimation(
   cardRefs: React.RefObject<(Group | null)[]>,
   activeSide: "light" | "dark",
   getPositions: () => Array<{ x: number; y: number; z: number }>,
   options: {
+    baseY?: number;
     stackDuration?: number;
     flipDuration?: number;
     fanDuration?: number;
   } = {},
 ) {
   const {
+    baseY = 0,
     stackDuration = 0.3,
     flipDuration = 0.5,
     fanDuration = 0.3,
   } = options;
 
-  const prevSide = useRef(activeSide);
+  // `null` = not yet mounted. Lets us detect the first effect run so we
+  // can set the initial rotation (the old code seeded this with `activeSide`
+  // and therefore skipped the first run entirely).
+  const prevSide = useRef<"light" | "dark" | null>(null);
+  // Accumulates π each time we flip so repeated flips keep rotating
+  // forward (0 → π → 2π → 3π …) rather than bouncing back and forth.
   const flipRotation = useRef(0);
   const isAnimating = useRef(false);
 
   useEffect(() => {
-    if (prevSide.current === activeSide) return;
+    const refs = cardRefs.current ?? [];
+
+    // ── First mount ── seed rotation based on activeSide, no animation.
+    if (prevSide.current === null) {
+      prevSide.current = activeSide;
+      flipRotation.current = baseY + (activeSide === "dark" ? Math.PI : 0);
+      for (const card of refs) {
+        if (card) card.rotation.y = flipRotation.current;
+      }
+      return;
+    }
+
+    // ── Same side, effect re-ran (e.g., a card was drawn) ──
+    // Any ref whose rotation.y came from the JSX default (0) needs to be
+    // snapped up to the current target so drawn cards don't flash the
+    // wrong side while the rest of the hand is flipped.
+    if (prevSide.current === activeSide) {
+      for (const card of refs) {
+        if (card && Math.abs(card.rotation.y - flipRotation.current) > 0.01) {
+          card.rotation.y = flipRotation.current;
+        }
+      }
+      return;
+    }
+
+    // ── Side change ── run the stack → flip → fan animation.
     if (isAnimating.current) return;
 
     prevSide.current = activeSide;
     isAnimating.current = true;
     flipRotation.current += Math.PI;
 
-    const refs = cardRefs.current ?? [];
     const positions = getPositions();
     // Stack at the center of this hand's positions (not screen center)
     const midIndex = Math.floor(positions.length / 2);
@@ -154,6 +195,7 @@ export function useFanFlipAnimation(
     activeSide,
     cardRefs,
     getPositions,
+    baseY,
     stackDuration,
     flipDuration,
     fanDuration,

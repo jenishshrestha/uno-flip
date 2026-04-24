@@ -34,12 +34,14 @@ export function getHandWorldPos(
 }
 
 // World pose for one card slot in the fan. Mirrors the internal layout math
-// so a drawn card can land exactly where it'll live post-commit.
+// so a drawn card can land exactly where it'll live post-commit. The Y flip
+// in dark mode keeps the drawn card showing the active side on arrival.
 export function getHandSlotTransform(
   camera: Camera,
   config: HandConfig,
   slotIndex: number,
   totalCount: number,
+  activeSide: ActiveSide = "light",
 ): { position: Vector3; quaternion: Quaternion; scale: number } {
   const { x: handX, z: handZ } = getHandWorldPos(camera, config);
   const n = Math.max(totalCount, 1);
@@ -50,8 +52,9 @@ export function getHandSlotTransform(
     0.01 + slotIndex * 0.003,
     handZ,
   );
+  const sideY = activeSide === "dark" ? Math.PI : 0;
   const quaternion = new Quaternion().setFromEuler(
-    new Euler(config.tiltX, 0, 0),
+    new Euler(config.tiltX, sideY, 0),
   );
   return { position, quaternion, scale: config.cardScale };
 }
@@ -69,11 +72,26 @@ export function PlayerHand3D({
   cards,
   activeSide,
   config = DEFAULT_HAND_CONFIG,
+  playableIds,
+  // Default: 0.15 along the card's local +Y (up the card face). With the
+  // standard tiltX that lands as roughly (0, 0.01, -0.15) in world, so
+  // playable cards rise up on screen without any camera-depth change.
+  playableTranslate = [0, 0.15, 0],
   onPlayCard,
 }: {
   cards: Card[];
   activeSide: ActiveSide;
   config?: HandConfig;
+  // Card IDs the player can legally play on the current discard top.
+  // When undefined, all cards are treated as playable. Used only to gate
+  // onClick — no visual difference is applied to unplayable cards.
+  playableIds?: ReadonlySet<number>;
+  // CSS-style [translateX, translateY, translateZ] applied in the card's
+  // LOCAL frame (after its tilt). translateY moves along the card's top
+  // edge (mostly -Z world = "up on screen"); translateZ moves along the
+  // card's face normal (mostly +Y world = toward camera); translateX is
+  // along world X since the card is only rotated around X.
+  playableTranslate?: [number, number, number];
   onPlayCard?: (
     card: Card,
     fromPose: {
@@ -106,12 +124,27 @@ export function PlayerHand3D({
     const totalWidth = (count - 1) * spacing;
     const startX = handWorldPos.x - totalWidth / 2;
 
-    return cards.map((_, i) => ({
-      x: startX + i * spacing,
-      y: 0.01 + i * 0.003,
-      z: handWorldPos.z,
-    }));
-  }, [cards, handWorldPos, cardSpacing]);
+    // Convert local-axis translate into a world offset using the card's
+    // single X-axis rotation (rotation={[tiltX, 0, 0]}):
+    //   worldX = localX
+    //   worldY = cos(tiltX)*localY − sin(tiltX)*localZ
+    //   worldZ = sin(tiltX)*localY + cos(tiltX)*localZ
+    const [lx, ly, lz] = playableTranslate;
+    const cos = Math.cos(tiltX);
+    const sin = Math.sin(tiltX);
+    const offX = lx;
+    const offY = cos * ly - sin * lz;
+    const offZ = sin * ly + cos * lz;
+
+    return cards.map((card, i) => {
+      const isPlayable = playableIds?.has(card.id) ?? false;
+      return {
+        x: startX + i * spacing + (isPlayable ? offX : 0),
+        y: 0.01 + i * 0.003 + (isPlayable ? offY : 0),
+        z: handWorldPos.z + (isPlayable ? offZ : 0),
+      };
+    });
+  }, [cards, handWorldPos, cardSpacing, playableIds, playableTranslate, tiltX]);
 
   const getPositions = useCallback(() => positions, [positions]);
   useFanFlipAnimation(cardRefs, activeSide, getPositions);
@@ -124,20 +157,21 @@ export function PlayerHand3D({
       if (!ref || !basePos) continue;
 
       if (hoveredIndex === null) {
-        // No hover — return all cards to base position
+        // No hover — slide each card to its baseline. Plain power2.out so a
+        // playable-status change just translates; no spring/overshoot.
         gsap.to(ref.position, {
           x: basePos.x,
           y: basePos.y,
           z: basePos.z,
-          duration: 0.35,
-          ease: "back.out(1.4)",
+          duration: 0.25,
+          ease: "power2.out",
         });
         gsap.to(ref.scale, {
           x: cardScale,
           y: cardScale,
           z: cardScale,
-          duration: 0.35,
-          ease: "back.out(1.4)",
+          duration: 0.25,
+          ease: "power2.out",
         });
         continue;
       }
@@ -190,6 +224,7 @@ export function PlayerHand3D({
       {cards.map((card, i) => {
         const pos = positions[i];
         if (!pos) return null;
+        const isPlayable = playableIds ? playableIds.has(card.id) : true;
 
         return (
           <group key={card.id}>
@@ -212,6 +247,7 @@ export function PlayerHand3D({
               }}
               onClick={(e) => {
                 e.stopPropagation();
+                if (!isPlayable) return;
                 const ref = cardRefs.current[i];
                 if (!ref) return;
                 const position = new Vector3();

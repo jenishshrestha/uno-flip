@@ -83,6 +83,7 @@ function lobbyState(room: {
     direction: "clockwise",
     players: getPublicPlayers(room),
     drawPileCount: 0,
+    drawPileTopCardId: null,
     hostId: room.hostId,
     chosenColor: null,
     challengeTarget: null,
@@ -246,6 +247,13 @@ io.on("connection", (socket) => {
     if (!result.success) {
       socket.emit("ERROR", { message: result.error ?? "Can't draw" });
       return;
+    }
+
+    if (result.card) {
+      io.to(room.code).emit("CARD_DRAWN", {
+        playerId: socket.id,
+        cardId: result.card.id,
+      });
     }
 
     broadcastGameState(room.code, room.hostId);

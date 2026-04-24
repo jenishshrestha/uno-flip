@@ -45,11 +45,15 @@ export function getDeckWorldPos(
 
 // World pose of the top card on the deck (the one that gets drawn next).
 // `visibleCount` is the number of cards currently rendered in the stack
-// (up to STACK_VISIBLE); the top card sits at local z = -(visibleCount-1)*gap.
+// (up to STACK_VISIBLE); the top card sits at local z = +(visibleCount-1)*gap
+// so it's physically above the cards below it, matching DiscardPile3D's
+// stacking direction. Per UNO Flip rules the deck is placed with the
+// INACTIVE side face-up, so in light mode the dark face is visible.
 export function getDeckTopTransform(
   config: DeckConfig,
   worldPos: { x: number; z: number },
   visibleCount: number,
+  activeSide: ActiveSide = "light",
 ): { position: Vector3; quaternion: Quaternion; scale: number } {
   const clampedCount = Math.min(visibleCount, STACK_VISIBLE);
   const groupQuat = new Quaternion().setFromEuler(
@@ -58,12 +62,19 @@ export function getDeckTopTransform(
   const localPos = new Vector3(
     0,
     0,
-    -(clampedCount - 1) * STACK_GAP,
+    (clampedCount - 1) * STACK_GAP,
   ).multiplyScalar(config.scale);
   const position = new Vector3(worldPos.x, 0, worldPos.z).add(
     localPos.applyQuaternion(groupQuat),
   );
-  return { position, quaternion: groupQuat, scale: config.scale };
+  // Flip to show the inactive side: π in light mode, 0 in dark mode.
+  const sideY = activeSide === "light" ? Math.PI : 0;
+  const sideQuat = new Quaternion().setFromAxisAngle(
+    new Vector3(0, 1, 0),
+    sideY,
+  );
+  const quaternion = groupQuat.clone().multiply(sideQuat);
+  return { position, quaternion, scale: config.scale };
 }
 
 export function DeckPile({
@@ -125,14 +136,21 @@ export function DeckPile({
           : undefined
       }
     >
-      {visibleCards.map((card, i) => (
-        <Card3D
-          key={card.id}
-          card={card}
-          activeSide={activeSide}
-          position={[0, 0, -i * STACK_GAP]}
-        />
-      ))}
+      {visibleCards.map((card, i) => {
+        // Deck shows the INACTIVE side per UNO Flip rules — dark face up
+        // in light mode, light face up in dark mode. Stacking direction
+        // matches DiscardPile3D: higher index = higher Z (physically on top).
+        const sideY = activeSide === "light" ? Math.PI : 0;
+        return (
+          <Card3D
+            key={card.id}
+            card={card}
+            activeSide={activeSide}
+            position={[0, 0, i * STACK_GAP]}
+            rotation={[0, sideY, 0]}
+          />
+        );
+      })}
     </group>
   );
 }
