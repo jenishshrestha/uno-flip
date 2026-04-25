@@ -31,12 +31,12 @@ export interface GameState {
   currentPlayerIndex: number;
   direction: Direction;
   players: PublicPlayer[];
-  drawPileCount: number;
-  // Card ID of the top of the draw pile, or null when empty. The rest of
-  // the deck stays private on the server; only the visible top is exposed
-  // (per UNO Flip's physical setup where the top card's inactive face is
-  // visible to all players).
-  drawPileTopCardId: number | null;
+  // Server's shuffled draw pile, card IDs in server-internal order: index 0
+  // is the bottom of the pile, the last element is the top (next to be drawn).
+  // Sent authoritatively on every broadcast so every client sees the same
+  // physical stack. In UNO Flip both sides of every card are visible anyway,
+  // so sharing the order isn't a real information leak.
+  drawPileCardIds: number[];
   hostId: string;
   chosenColor: string | null;
   challengeTarget: string | null;

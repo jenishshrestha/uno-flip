@@ -15,6 +15,10 @@ interface FullCardProps {
   onClick?: () => void;
   onPointerEnter?: () => void;
   onPointerLeave?: () => void;
+  // For wild cards on top of the discard pile: paints the wild's 4-color
+  // diamond and corner badges in this single hex (UNO Mobile style). Ignored
+  // for non-wild cards.
+  chosenColorHex?: string;
 }
 
 // ─── Single-face card — used for discard top (server only sends CardSide) ───
@@ -51,11 +55,12 @@ const FullCard = forwardRef<Group, FullCardProps>(function FullCard(
     onClick,
     onPointerEnter,
     onPointerLeave,
+    chosenColorHex,
   },
   ref,
 ) {
-  const lightTexture = useCardFaceTexture(card.light, "light");
-  const darkTexture = useCardFaceTexture(card.dark, "dark");
+  const lightTexture = useCardFaceTexture(card.light, "light", chosenColorHex);
+  const darkTexture = useCardFaceTexture(card.dark, "dark", chosenColorHex);
 
   return (
     <group ref={ref} position={position} rotation={rotation}>

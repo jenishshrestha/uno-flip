@@ -1,7 +1,8 @@
 import { useThree } from "@react-three/fiber";
 import type { ActiveSide, Card } from "@uno-flip/shared";
-import { useMemo } from "react";
-import { type Camera, Euler, Quaternion, Vector3 } from "three";
+import gsap from "gsap";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { type Camera, Euler, type Group, Quaternion, Vector3 } from "three";
 import { CARD_DEPTH } from "../utils/constants.js";
 import { Card3D } from "./Card3D.js";
 
@@ -13,6 +14,16 @@ const STACK_GAP = CARD_DEPTH;
 const MAX_SPIN = (35 * Math.PI) / 180;
 // Max X/Y position jitter per card (card-local, before parent tilt)
 const MAX_OFFSET = 0.45;
+// Duration of the per-card flip animation when an entry's `side` changes
+const FLIP_ANIMATION_DURATION = 0.6;
+
+// One card committed to the discard pile, frozen on the side it was played on.
+// The `side` may change later (e.g., a Flip card animates to its other side
+// once the flip mechanic resolves), but older entries keep their original side.
+export interface DiscardEntry {
+  card: Card;
+  side: ActiveSide;
+}
 
 export interface DiscardConfig {
   screenLeft: number;
@@ -59,17 +70,22 @@ function cardJitter(cardId: number) {
   return { spin, offX, offY };
 }
 
+function sideToY(side: ActiveSide): number {
+  return side === "dark" ? Math.PI : 0;
+}
+
 // World-space pose a card lands at when it reaches the top of the pile.
 // `incomingIndex` is the index that card will occupy in the visible slice
 // once committed (typically Math.min(currentPileLength, MAX_VISIBLE - 1)).
-// The card rotates 180° around its local Y in dark mode so the correct face
-// (matching the currently-active side) points toward the camera.
+// `sidePlayedOn` decides which face is up at landing — the entry's stored
+// side. This always matches what DiscardPile3D will subsequently render, so
+// the throw lands cleanly with no orientation pop.
 export function getDiscardTopTransform(
   card: Card,
   incomingIndex: number,
   config: DiscardConfig,
   worldPos: { x: number; z: number },
-  activeSide: ActiveSide = "light",
+  sidePlayedOn: ActiveSide = "light",
 ): { position: Vector3; quaternion: Quaternion; scale: number } {
   const { spin, offX, offY } = cardJitter(card.id);
   const groupQuat = new Quaternion().setFromEuler(
@@ -80,8 +96,9 @@ export function getDiscardTopTransform(
     offY,
     incomingIndex * STACK_GAP,
   ).multiplyScalar(config.scale);
-  const sideY = activeSide === "dark" ? Math.PI : 0;
-  const cardQuat = new Quaternion().setFromEuler(new Euler(0, sideY, spin));
+  const cardQuat = new Quaternion().setFromEuler(
+    new Euler(0, sideToY(sidePlayedOn), spin),
+  );
   const position = new Vector3(worldPos.x, 0, worldPos.z).add(
     localPos.applyQuaternion(groupQuat),
   );
@@ -94,14 +111,70 @@ export function getNextDiscardSlot(currentPileLength: number): number {
   return Math.min(currentPileLength, MAX_VISIBLE - 1);
 }
 
+// One card on the discard pile. Snaps to its initial side on mount; if the
+// `side` prop changes later, animates a 180° Y flip (used for the Flip card
+// resolving its mechanic — every other entry keeps its original side).
+function DiscardCard({
+  entry,
+  position,
+  spin,
+  chosenColorHex,
+}: {
+  entry: DiscardEntry;
+  position: [number, number, number];
+  spin: number;
+  // Set only on the top entry when the active wild card has a chosen color;
+  // recolors the wild's center diamond to match (UNO Mobile style).
+  chosenColorHex?: string;
+}) {
+  const ref = useRef<Group>(null);
+  const prevSideRef = useRef<ActiveSide | null>(null);
+
+  // Initial mount: snap rotation imperatively so we don't fight the GSAP
+  // animation later (passing `rotation` as a prop would re-set it every render).
+  useLayoutEffect(() => {
+    const obj = ref.current;
+    if (!obj || prevSideRef.current !== null) return;
+    obj.rotation.set(0, sideToY(entry.side), spin);
+    prevSideRef.current = entry.side;
+  }, [entry.side, spin]);
+
+  // On subsequent side changes (the flip mechanic), animate a Y rotation
+  // toward the new side. The card visually flips in place.
+  useEffect(() => {
+    const obj = ref.current;
+    if (!obj) return;
+    if (prevSideRef.current === null || prevSideRef.current === entry.side)
+      return;
+    prevSideRef.current = entry.side;
+    gsap.to(obj.rotation, {
+      y: sideToY(entry.side),
+      duration: FLIP_ANIMATION_DURATION,
+      ease: "power2.inOut",
+    });
+  }, [entry.side]);
+
+  return (
+    <group ref={ref} position={position}>
+      <Card3D
+        card={entry.card}
+        activeSide={entry.side}
+        chosenColorHex={chosenColorHex}
+      />
+    </group>
+  );
+}
+
 export function DiscardPile3D({
   cards,
-  activeSide,
   config = DEFAULT_DISCARD_CONFIG,
+  chosenColorHex,
 }: {
-  cards: Card[];
-  activeSide: ActiveSide;
+  cards: DiscardEntry[];
   config?: DiscardConfig;
+  // When set and the top entry is a wild card, that card visually adopts
+  // this color (matches UNO Mobile's "wild becomes the chosen color" look).
+  chosenColorHex?: string;
 }) {
   const { scale, tiltX, tiltY, tiltZ } = config;
   const { camera } = useThree();
@@ -114,6 +187,7 @@ export function DiscardPile3D({
   if (cards.length === 0) return null;
 
   const visibleCards = cards.slice(-MAX_VISIBLE);
+  const topIndex = visibleCards.length - 1;
 
   return (
     <group
@@ -121,16 +195,15 @@ export function DiscardPile3D({
       rotation={[tiltX, tiltY, tiltZ]}
       scale={scale}
     >
-      {visibleCards.map((card, i) => {
-        const { spin, offX, offY } = cardJitter(card.id);
-        const sideY = activeSide === "dark" ? Math.PI : 0;
+      {visibleCards.map((entry, i) => {
+        const { spin, offX, offY } = cardJitter(entry.card.id);
         return (
-          <Card3D
-            key={card.id}
-            card={card}
-            activeSide={activeSide}
+          <DiscardCard
+            key={entry.card.id}
+            entry={entry}
             position={[offX, offY, i * STACK_GAP]}
-            rotation={[0, sideY, spin]}
+            spin={spin}
+            chosenColorHex={i === topIndex ? chosenColorHex : undefined}
           />
         );
       })}

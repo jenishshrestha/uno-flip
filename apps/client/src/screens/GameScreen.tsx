@@ -680,7 +680,7 @@ export function GameScreen({
               opacity: isMyTurn ? 1 : 0.5,
             }}
           >
-            {gameState.drawPileCount}
+            {gameState.drawPileCardIds.length}
           </motion.button>
         </div>
       </div>

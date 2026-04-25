@@ -20,6 +20,94 @@ import {
 } from "./deck.js";
 import { calculateRoundScores, totalWinnerPoints } from "./scoring.js";
 
+// ─── Dev: preset starting hands for testing ───────────────────────────
+// Maps player INDEX (in join order; 0 = host) → list of light-side card
+// descriptors. Set to null to use the normal random deal.
+//
+// Descriptor format matches RAW_DECK in shared/constants/deck.ts:
+//   "wild" | "wild draw 2" | "wild draw color"
+//   "<color> <value>"  e.g. "yellow 5", "blue draw 1", "red skip",
+//                            "green flip", "purple skip everyone"
+//
+// Cards listed for one player are removed from the draw pile, so they
+// won't appear in another player's hand or as the discard top.
+//
+// Example:
+const TEST_HANDS: (string[] | null)[] | null = [
+  ["wild", "wild draw 2", "flip", "yellow 5", "blue 3", "red 7", "green 2"],
+  ["wild", "draw 1", "skip", "yellow 8", "blue 5", "red 2", "green 9"],
+];
+// const TEST_HANDS: (string[] | null)[] | null = null;
+
+function sideValueToString(v: CardValue): string {
+  if (typeof v === "number") return String(v);
+  switch (v) {
+    case "wild_draw_two":
+      return "wild draw 2";
+    case "wild_draw_color":
+      return "wild draw color";
+    case "draw_one":
+      return "draw 1";
+    case "draw_five":
+      return "draw 5";
+    case "skip_everyone":
+      return "skip everyone";
+    default:
+      return v;
+  }
+}
+
+function matchDescriptor(desc: string, side: CardSide): boolean {
+  const d = desc.trim().toLowerCase();
+  if (d === "wild") return side.color === "wild" && side.value === "wild";
+  if (d === "wild draw 2")
+    return side.color === "wild" && side.value === "wild_draw_two";
+  if (d === "wild draw color")
+    return side.color === "wild" && side.value === "wild_draw_color";
+  return d === `${side.color} ${sideValueToString(side.value)}`;
+}
+
+function applyTestHands(
+  game: GameInstance,
+  presets: (string[] | null)[],
+): void {
+  for (let i = 0; i < game.playerIds.length; i++) {
+    const preset = presets[i];
+    if (!preset) continue;
+    const playerId = game.playerIds[i];
+    if (!playerId) continue;
+
+    // Return the random deal back to the draw pile so we can pull specific
+    // cards out for this player.
+    const oldHand = game.hands.get(playerId) ?? [];
+    game.deck.drawPile.push(...oldHand);
+
+    const newHand: Card[] = [];
+    for (const desc of preset) {
+      const idx = game.deck.drawPile.findIndex((c) =>
+        matchDescriptor(desc, c.light),
+      );
+      if (idx === -1) {
+        console.warn(
+          `[TEST_HANDS] no card matching "${desc}" available for player ${i}`,
+        );
+        continue;
+      }
+      const [card] = game.deck.drawPile.splice(idx, 1);
+      if (card) newHand.push(card);
+    }
+    game.hands.set(playerId, newHand);
+  }
+
+  // Re-shuffle the remaining draw pile so flipStartingCard stays random.
+  for (let i = game.deck.drawPile.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = game.deck.drawPile[i] as Card;
+    game.deck.drawPile[i] = game.deck.drawPile[j] as Card;
+    game.deck.drawPile[j] = temp;
+  }
+}
+
 // ─── Internal game state (server only) ───
 export interface GameInstance {
   phase: GamePhase;
@@ -72,6 +160,9 @@ export function createGame(
     game.playerIds,
     GAME_RULES.CARDS_PER_PLAYER,
   );
+
+  // Optionally override with TEST_HANDS preset for local testing.
+  if (TEST_HANDS) applyTestHands(game, TEST_HANDS);
 
   // Flip starting card and handle special starting cards
   flipStartingCard(game);
@@ -154,6 +245,7 @@ export interface PlayResult {
   flip?: boolean;
   cardPlayedId?: number;
   drawnByNext?: Card[];
+  drawTargetId?: string; // who drew the cards in drawnByNext
   skippedPlayerIds?: string[];
   roundOver?: boolean;
   gameOver?: boolean;
@@ -294,6 +386,7 @@ function applyActionEffects(
         targetHand,
         action.drawCards,
       );
+      result.drawTargetId = targetId;
     }
 
     // Skip the target player
@@ -374,12 +467,34 @@ export function selectColor(
   game.chosenColor = color;
   const result: PlayResult = { success: true };
 
-  // If this was a wild draw card, go to challenge phase
+  // Wild draw card: apply the draw effect to the next player and skip them.
+  // (No challenge mechanic — that was removed in favor of the simpler flow.)
   if (game.pendingDrawAction) {
-    game.phase = "awaiting_challenge";
+    const action = resolveAction(game.pendingDrawAction);
     advanceTurn(game);
-    game.challengeTarget = game.playerIds[game.currentPlayerIndex] ?? null;
-    result.awaitingChallenge = true;
+    const targetId = game.playerIds[game.currentPlayerIndex];
+    const targetHand = targetId ? game.hands.get(targetId) : null;
+    if (targetId && targetHand) {
+      if (action.drawCards === -1) {
+        result.drawnByNext = drawUntilColor(
+          game.deck,
+          targetHand,
+          color,
+          game.activeSide,
+        );
+      } else if (action.drawCards > 0) {
+        result.drawnByNext = forceDrawCards(
+          game.deck,
+          targetHand,
+          action.drawCards,
+        );
+      }
+      result.skippedPlayerIds = [targetId];
+      result.drawTargetId = targetId;
+      advanceTurn(game); // skip past the target
+    }
+    clearChallengeState(game);
+    game.phase = "playing";
     return result;
   }
 
@@ -390,166 +505,19 @@ export function selectColor(
   return result;
 }
 
-// ─── Target accepts the draw penalty (no challenge) ───
-export function acceptDraw(game: GameInstance, playerId: string): PlayResult {
-  if (game.phase !== "awaiting_challenge") {
-    return { success: false, error: "Not awaiting challenge" };
-  }
-  if (game.challengeTarget !== playerId) {
-    return { success: false, error: "Not the challenge target" };
-  }
-
-  const result: PlayResult = { success: true };
-  const targetHand = game.hands.get(playerId);
-  if (!targetHand) return { success: false, error: "Player not found" };
-
-  // Apply the draw penalty
-  const action = resolveAction(game.pendingDrawAction ?? "wild");
-  if (action.drawCards === -1) {
-    // Wild Draw Color — draw until chosen color
-    result.drawnByNext = drawUntilColor(
-      game.deck,
-      targetHand,
-      game.chosenColor ?? "",
-      game.activeSide,
-    );
-  } else if (action.drawCards > 0) {
-    result.drawnByNext = forceDrawCards(
-      game.deck,
-      targetHand,
-      action.drawCards,
-    );
-  }
-
-  result.skippedPlayerIds = [playerId];
-
-  // Clear challenge state and skip target
-  clearChallengeState(game);
-  game.phase = "playing";
-  advanceTurn(game);
-
-  return result;
-}
-
-// ─── Target challenges the wild draw ───
-export interface ChallengeResult {
-  success: boolean;
-  error?: string;
-  challengeSuccess: boolean; // did the challenger catch an illegal play?
-  penaltyPlayerId: string;
-  penaltyCards: number;
-}
-
-export function challengeDraw(
-  game: GameInstance,
-  playerId: string,
-): ChallengeResult {
-  if (game.phase !== "awaiting_challenge") {
-    return {
-      success: false,
-      error: "Not awaiting challenge",
-      challengeSuccess: false,
-      penaltyPlayerId: "",
-      penaltyCards: 0,
-    };
-  }
-  if (game.challengeTarget !== playerId) {
-    return {
-      success: false,
-      error: "Not the challenge target",
-      challengeSuccess: false,
-      penaltyPlayerId: "",
-      penaltyCards: 0,
-    };
-  }
-
-  const challengedId = game.challengedPlayerId ?? "";
-  const challengedHand = game.hands.get(challengedId);
-  const challengerHand = game.hands.get(playerId);
-
-  if (!challengedHand || !challengerHand) {
-    return {
-      success: false,
-      error: "Player not found",
-      challengeSuccess: false,
-      penaltyPlayerId: "",
-      penaltyCards: 0,
-    };
-  }
-
-  // Was the wild draw legal? We checked this BEFORE the card was removed from hand
-  // (stored in game.wildDrawWasLegal during playCard)
-  const challengeSuccess = !game.wildDrawWasLegal; // illegal play = challenge succeeds
-
-  if (challengeSuccess) {
-    // Challenge succeeded — challenged player takes the penalty
-    const action = resolveAction(game.pendingDrawAction ?? "wild");
-    let penaltyCards = 0;
-
-    if (action.drawCards === -1) {
-      const drawn = drawUntilColor(
-        game.deck,
-        challengedHand,
-        game.chosenColor ?? "",
-        game.activeSide,
-      );
-      penaltyCards = drawn.length;
-    } else {
-      forceDrawCards(game.deck, challengedHand, action.drawCards);
-      penaltyCards = action.drawCards;
-    }
-
-    clearChallengeState(game);
-    game.phase = "playing";
-    // Challenger plays normally (don't skip them)
-
-    return {
-      success: true,
-      challengeSuccess: true,
-      penaltyPlayerId: challengedId,
-      penaltyCards,
-    };
-  }
-
-  // Challenge failed — challenger draws penalty + 2 extra
-  const action = resolveAction(game.pendingDrawAction ?? "wild");
-  let penaltyCards = 0;
-
-  if (action.drawCards === -1) {
-    const drawn = drawUntilColor(
-      game.deck,
-      challengerHand,
-      game.chosenColor ?? "",
-      game.activeSide,
-    );
-    penaltyCards = drawn.length;
-  } else {
-    forceDrawCards(game.deck, challengerHand, action.drawCards);
-    penaltyCards = action.drawCards;
-  }
-
-  // Plus 2 extra penalty cards
-  forceDrawCards(game.deck, challengerHand, GAME_RULES.CHALLENGE_PENALTY_EXTRA);
-  penaltyCards += GAME_RULES.CHALLENGE_PENALTY_EXTRA;
-
-  clearChallengeState(game);
-  game.phase = "playing";
-  // Challenger loses their turn — advance past them
-  advanceTurn(game);
-
-  return {
-    success: true,
-    challengeSuccess: false,
-    penaltyPlayerId: playerId,
-    penaltyCards,
-  };
-}
-
 // ─── Call UNO ───
-// Player can call UNO when they have 1 or 2 cards (before or after playing)
+// Player can call UNO only when they have exactly 2 cards AND at least one
+// of them can legally be played on the current discard top — i.e., they're
+// about to drop to 1 card on their next play.
 export function callUno(game: GameInstance, playerId: string): boolean {
   const hand = game.hands.get(playerId);
-  if (!hand || hand.length > 2 || hand.length === 0) return false;
+  if (!hand || hand.length !== 2) return false;
+  const top = game.discardTopSide;
+  if (!top) return false;
+  const hasPlayable = hand.some((c) =>
+    canPlayCard(c, top, game.activeSide, game.chosenColor),
+  );
+  if (!hasPlayable) return false;
   game.calledUno.add(playerId);
   return true;
 }
@@ -570,18 +538,15 @@ export function catchUno(
 }
 
 // ─── Perform the Flip mechanic ───
-// Official rules: entire discard pile flips, draw pile flips, all hands flip
+// We diverge from the physical-rule "reverse discard pile" for clarity:
+// the just-played Flip card stays on top and only its visible side changes.
+// Hands and the draw pile flip via activeSide as usual; older pile cards
+// stay frozen on whichever side they were played (visualized client-side).
 function performFlip(game: GameInstance): void {
   game.activeSide = game.activeSide === "light" ? "dark" : "light";
 
-  // Official rule: entire discard pile reverses.
-  // The Flip card (just played) goes to the BOTTOM,
-  // the previous bottom card becomes the new top.
-  game.deck.discardPile.reverse();
-
-  // Draw pile also flips (just switch which side we read — already handled by activeSide)
-
-  // Update the discard top to the new side of the new top card
+  // Top of pile is still the just-played Flip card; matching now happens
+  // against its new side.
   const topCard = getDiscardTop(game.deck);
   if (topCard) {
     game.discardTopSide =
@@ -680,7 +645,6 @@ export function getPublicGameState(
     };
   });
 
-  const drawPileTop = game.deck.drawPile[game.deck.drawPile.length - 1];
   return {
     phase: game.phase,
     activeSide: game.activeSide,
@@ -688,8 +652,7 @@ export function getPublicGameState(
     currentPlayerIndex: game.currentPlayerIndex,
     direction: game.direction,
     players,
-    drawPileCount: game.deck.drawPile.length,
-    drawPileTopCardId: drawPileTop?.id ?? null,
+    drawPileCardIds: game.deck.drawPile.map((c) => c.id),
     hostId,
     chosenColor: game.chosenColor,
     challengeTarget: game.challengeTarget,

@@ -12,8 +12,6 @@ export interface ClientToServerEvents {
   CATCH_UNO: (data: { targetPlayerId: string }) => void;
   SELECT_COLOR: (data: { color: LightColor | DarkColor }) => void;
   PASS_TURN: () => void;
-  CHALLENGE_DRAW: () => void;
-  ACCEPT_DRAW: () => void;
   START_NEXT_ROUND: () => void;
 }
 
@@ -27,22 +25,17 @@ export interface ServerToClientEvents {
   DEAL_CARDS: (data: {
     deals: DealInfo[];
     discardTopCardId: number;
-    drawPileCount: number;
+    drawPileCardIds: number[];
   }) => void;
   CARD_PLAYED: (data: { playerId: string; cardId: number }) => void;
   CARD_DRAWN: (data: { playerId: string; cardId: number }) => void;
-  FLIP_EVENT: () => void;
+  FLIP_EVENT: (data: { cardId: number }) => void;
+  COLOR_CHOSEN: (data: { color: LightColor | DarkColor }) => void;
   UNO_CALLED: (data: { playerId: string; playerName: string }) => void;
   UNO_CAUGHT: (data: {
     catcherId: string;
     targetId: string;
     targetName: string;
-  }) => void;
-  CHALLENGE_RESULT: (data: {
-    challengerId: string;
-    challengedId: string;
-    success: boolean;
-    penaltyCards: number;
   }) => void;
   ROUND_OVER: (data: {
     winnerId: string;

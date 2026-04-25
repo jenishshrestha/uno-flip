@@ -99,17 +99,38 @@ const DARK_INNER_RECT =
 const DARK_OVAL =
   '<path fill="url(#grad)" stroke="#000" stroke-width="5" d="M181 83.5c20.711 0 37.5 16.789 37.5 37.5 0 86.985-70.515 157.5-157.5 157.5-20.71 0-37.5-16.789-37.5-37.5 0-86.985 70.515-157.5 157.5-157.5Z"/>';
 
+// Recolor the wild card's BLACK inner background to the chosen color. The
+// 4-color diamond and the white +N / wild text stay untouched, so the symbol
+// remains legible (UNO Mobile does it this way too). `stroke="black"` on the
+// outer card border is intentionally untouched.
+function tintWildSvg(svg: string, hex: string): string {
+  return svg.replaceAll('fill="black"', `fill="${hex}"`);
+}
+
 // ─── Build a complete card SVG string ───
 export function buildCardSvg(
   color: string,
   value: string,
   side: "light" | "dark" = "light",
   gradient?: { start: string; end: string } | null,
+  chosenColorHex?: string,
 ): string {
-  // Wild cards have their own complete SVG (same for both sides)
-  if (value === "wild") return WILD_SVG;
-  if (value === "wild_draw_two") return WILD_DRAW_TWO_SVG;
-  if (value === "wild_draw_color") return WILD_DRAW_COLOR_SVG;
+  // Wild cards have their own complete SVG (same for both sides). When a
+  // chosen color is provided (only for the top of the discard pile), tint
+  // the whole 4-color diamond + corner badges to that single color.
+  if (
+    value === "wild" ||
+    value === "wild_draw_two" ||
+    value === "wild_draw_color"
+  ) {
+    const baseSvg =
+      value === "wild"
+        ? WILD_SVG
+        : value === "wild_draw_two"
+          ? WILD_DRAW_TWO_SVG
+          : WILD_DRAW_COLOR_SVG;
+    return chosenColorHex ? tintWildSvg(baseSvg, chosenColorHex) : baseSvg;
+  }
 
   const valuePath = VALUE_PATHS[value] ?? "";
 

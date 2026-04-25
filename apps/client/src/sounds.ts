@@ -34,3 +34,20 @@ export function playPickSound() {
 export function playDrawSound() {
   play(drawSound);
 }
+
+// Light-side color voiceovers (UNO Mobile-style). Dark-side colors have no
+// audio — playColorSound silently no-ops for orange/pink/purple/teal.
+const colorSounds: Partial<Record<string, HTMLAudioElement>> = {
+  red: new Audio("/sounds/color-red.mp3"),
+  yellow: new Audio("/sounds/color-yellow.mp3"),
+  green: new Audio("/sounds/color-green.mp3"),
+  blue: new Audio("/sounds/color-blue.mp3"),
+};
+for (const a of Object.values(colorSounds)) {
+  if (a) a.volume = 0.9;
+}
+
+export function playColorSound(color: string) {
+  const a = colorSounds[color];
+  if (a) play(a);
+}

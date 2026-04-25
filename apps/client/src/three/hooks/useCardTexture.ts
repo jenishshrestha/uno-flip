@@ -45,27 +45,31 @@ const faceTextureCache = new Map<string, CanvasTexture>();
 function getOrCreateFaceTexture(
   face: CardSide,
   activeSide: ActiveSide,
+  chosenColorHex?: string,
 ): CanvasTexture {
   const value = formatValue(face.value);
-  const key = `${face.color}|${value}|${activeSide}`;
+  const key = `${face.color}|${value}|${activeSide}|${chosenColorHex ?? ""}`;
   const cached = faceTextureCache.get(key);
   if (cached) return cached;
 
   const color = getCardColorHex(face, activeSide);
   const gradient = activeSide === "dark" ? getDarkGradient(face.color) : null;
-  const svg = buildCardSvg(color, value, activeSide, gradient);
+  const svg = buildCardSvg(color, value, activeSide, gradient, chosenColorHex);
   const texture = svgToTexture(svg);
   faceTextureCache.set(key, texture);
   return texture;
 }
 
 // ─── Main hook ───
+// `chosenColorHex` only applies to wild cards on the discard pile (recolors
+// the 4-color diamond to a single tint). Folded into the cache key.
 export function useCardFaceTexture(
   face: CardSide,
   activeSide: ActiveSide,
+  chosenColorHex?: string,
 ): CanvasTexture {
   return useMemo(
-    () => getOrCreateFaceTexture(face, activeSide),
-    [face, activeSide],
+    () => getOrCreateFaceTexture(face, activeSide, chosenColorHex),
+    [face, activeSide, chosenColorHex],
   );
 }

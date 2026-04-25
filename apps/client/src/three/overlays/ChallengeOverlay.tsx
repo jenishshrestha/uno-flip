@@ -1,7 +1,31 @@
+import type { CardValue } from "@uno-flip/shared";
 import { AnimatePresence, motion } from "motion/react";
 import { socket } from "../../socket.js";
 
-export function ChallengeOverlay({ show }: { show: boolean }) {
+// Per actions.ts: wild_draw_two = 4. Failed challenge adds
+// CHALLENGE_PENALTY_EXTRA (2). wild_draw_color is variable ("until color").
+function getCounts(wildValue: CardValue | null) {
+  if (wildValue === "wild_draw_two") {
+    return { acceptLabel: "+4", failLabel: "+6 if fail" };
+  }
+  if (wildValue === "wild_draw_color") {
+    return {
+      acceptLabel: "until color",
+      failLabel: "until color, +2 if fail",
+    };
+  }
+  return { acceptLabel: "", failLabel: "" };
+}
+
+export function ChallengeOverlay({
+  show,
+  wildValue,
+}: {
+  show: boolean;
+  wildValue?: CardValue | null;
+}) {
+  const { acceptLabel, failLabel } = getCounts(wildValue ?? null);
+
   return (
     <AnimatePresence>
       {show && (
@@ -30,9 +54,18 @@ export function ChallengeOverlay({ show }: { show: boolean }) {
           >
             You've been hit with a Wild Draw!
           </motion.p>
-          <p style={{ color: "#aaa", fontSize: 14, margin: 0 }}>
-            Accept the penalty or challenge (if you think it was played
-            illegally)
+          <p
+            style={{
+              color: "#aaa",
+              fontSize: 14,
+              margin: 0,
+              maxWidth: 360,
+              textAlign: "center",
+              lineHeight: 1.4,
+            }}
+          >
+            Draw the cards, or Challenge if you think it was played illegally.
+            A failed challenge means you draw extra.
           </p>
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
@@ -56,7 +89,7 @@ export function ChallengeOverlay({ show }: { show: boolean }) {
                 cursor: "pointer",
               }}
             >
-              Accept Draw
+              Accept Draw {acceptLabel}
             </motion.button>
             <motion.button
               type="button"
@@ -74,7 +107,7 @@ export function ChallengeOverlay({ show }: { show: boolean }) {
                 cursor: "pointer",
               }}
             >
-              Challenge!
+              Challenge {failLabel ? `(${failLabel})` : ""}
             </motion.button>
           </motion.div>
         </motion.div>

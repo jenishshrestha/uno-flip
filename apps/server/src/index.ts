@@ -9,10 +9,8 @@ import { FULL_DECK, GAME_RULES } from "@uno-flip/shared";
 import express from "express";
 import { Server } from "socket.io";
 import {
-  acceptDraw,
   callUno,
   catchUno,
-  challengeDraw,
   createGame,
   type GameInstance,
   getDealInfo,
@@ -82,8 +80,7 @@ function lobbyState(room: {
     currentPlayerIndex: 0,
     direction: "clockwise",
     players: getPublicPlayers(room),
-    drawPileCount: 0,
-    drawPileTopCardId: null,
+    drawPileCardIds: [],
     hostId: room.hostId,
     chosenColor: null,
     challengeTarget: null,
@@ -183,7 +180,7 @@ io.on("connection", (socket) => {
     io.to(room.code).emit("DEAL_CARDS", {
       deals: dealInfo.deals,
       discardTopCardId: dealInfo.discardTopCardId,
-      drawPileCount: game.deck.drawPile.length,
+      drawPileCardIds: game.deck.drawPile.map((c) => c.id),
     });
 
     broadcastGameState(room.code, room.hostId);
@@ -212,9 +209,22 @@ io.on("connection", (socket) => {
       });
     }
 
-    // Broadcast flip event
-    if (result.flip) {
-      io.to(room.code).emit("FLIP_EVENT");
+    // Broadcast flip event with the card that triggered it, so the client
+    // can flip just that pile entry.
+    if (result.flip && result.cardPlayedId !== undefined) {
+      io.to(room.code).emit("FLIP_EVENT", { cardId: result.cardPlayedId });
+    }
+
+    // Broadcast each forced draw (e.g., draw_one / draw_five action effects)
+    // as a CARD_DRAWN event so clients animate them flying to the target.
+    if (result.drawTargetId && result.drawnByNext) {
+      const targetId = result.drawTargetId;
+      for (const card of result.drawnByNext) {
+        io.to(room.code).emit("CARD_DRAWN", {
+          playerId: targetId,
+          cardId: card.id,
+        });
+      }
     }
 
     // Handle round/game over
@@ -284,6 +294,19 @@ io.on("connection", (socket) => {
       return;
     }
 
+    io.to(room.code).emit("COLOR_CHOSEN", { color });
+
+    // Wild draw cards: broadcast each forced draw to the targeted player.
+    if (result.drawTargetId && result.drawnByNext) {
+      const targetId = result.drawTargetId;
+      for (const card of result.drawnByNext) {
+        io.to(room.code).emit("CARD_DRAWN", {
+          playerId: targetId,
+          cardId: card.id,
+        });
+      }
+    }
+
     broadcastGameState(room.code, room.hostId);
   });
 
@@ -322,45 +345,6 @@ io.on("connection", (socket) => {
       });
       broadcastGameState(room.code, room.hostId);
     }
-  });
-
-  // ─── ACCEPT DRAW (no challenge) ───
-  socket.on("ACCEPT_DRAW", () => {
-    const room = findRoomByPlayerId(socket.id);
-    if (!room) return;
-    const game = games.get(room.code);
-    if (!game) return;
-
-    const result = acceptDraw(game, socket.id);
-    if (!result.success) {
-      socket.emit("ERROR", { message: result.error ?? "Can't accept" });
-      return;
-    }
-
-    broadcastGameState(room.code, room.hostId);
-  });
-
-  // ─── CHALLENGE DRAW ───
-  socket.on("CHALLENGE_DRAW", () => {
-    const room = findRoomByPlayerId(socket.id);
-    if (!room) return;
-    const game = games.get(room.code);
-    if (!game) return;
-
-    const result = challengeDraw(game, socket.id);
-    if (!result.success) {
-      socket.emit("ERROR", { message: result.error ?? "Can't challenge" });
-      return;
-    }
-
-    io.to(room.code).emit("CHALLENGE_RESULT", {
-      challengerId: socket.id,
-      challengedId: result.penaltyPlayerId,
-      success: result.challengeSuccess,
-      penaltyCards: result.penaltyCards,
-    });
-
-    broadcastGameState(room.code, room.hostId);
   });
 
   // ─── START NEXT ROUND ───

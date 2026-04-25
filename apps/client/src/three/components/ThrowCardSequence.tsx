@@ -35,6 +35,7 @@ export function ThrowCardSequence({
   duration = DEFAULT_DURATION,
   arcHeight = DEFAULT_ARC_HEIGHT,
   extraSpin = DEFAULT_EXTRA_SPIN,
+  chosenColorHex,
 }: {
   card: Card;
   activeSide: ActiveSide;
@@ -44,6 +45,9 @@ export function ThrowCardSequence({
   duration?: number;
   arcHeight?: number;
   extraSpin?: number;
+  // For wild throws — paints the wild's black background to this hex during
+  // flight so the landing tint doesn't pop in.
+  chosenColorHex?: string;
 }) {
   const ref = useRef<Group>(null);
   const elapsedRef = useRef(0);
@@ -83,7 +87,11 @@ export function ThrowCardSequence({
 
   return (
     <group ref={ref}>
-      <Card3D card={card} activeSide={activeSide} />
+      <Card3D
+        card={card}
+        activeSide={activeSide}
+        chosenColorHex={chosenColorHex}
+      />
     </group>
   );
 }

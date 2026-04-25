@@ -1,7 +1,15 @@
-import type { Card, CardValue, GameState, PlayerHand } from "@uno-flip/shared";
+import type {
+  Card,
+  CardValue,
+  DarkColor,
+  GameState,
+  LightColor,
+  PlayerHand,
+} from "@uno-flip/shared";
 import { DECK_MAP, FULL_DECK } from "@uno-flip/shared";
 import { button, Leva, useControls } from "leva";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { DiscardEntry } from "./components/DiscardPile3D.js";
 import type { DrawRequest, OpponentPlay } from "./ThreeGameScreen.js";
 import { ThreeGameScreen } from "./ThreeGameScreen.js";
 
@@ -34,13 +42,18 @@ const TEST_HAND_LIGHT: Array<(card: (typeof FULL_DECK)[number]) => boolean> = [
 export function TestScene() {
   const [activeSide, setActiveSide] = useState<"light" | "dark">("light");
   const [shouldDeal, setShouldDeal] = useState(false);
-  const [discardPile, setDiscardPile] = useState<Card[]>([]);
+  const [discardPile, setDiscardPile] = useState<DiscardEntry[]>([]);
   const [removedCardIds, setRemovedCardIds] = useState<Set<number>>(new Set());
   const [opponentPlay, setOpponentPlay] = useState<OpponentPlay | null>(null);
   const [drawRequest, setDrawRequest] = useState<DrawRequest | null>(null);
   // Cards drawn post-deal, appended to each player's initial round-robin hand
   const [extraCardIds, setExtraCardIds] = useState<Record<string, number[]>>(
     {},
+  );
+  // Chosen color for the current top wild (null = no wild on top, or color
+  // not yet picked). Drives the wild-card tint + opponent throw buffering.
+  const [chosenColor, setChosenColor] = useState<LightColor | DarkColor | null>(
+    null,
   );
 
   const { playerCount, cardCount, currentTurn, deckOffset } = useControls(
@@ -86,7 +99,25 @@ export function TestScene() {
       if (oppIdx >= playerCount) return;
       triggerDraw(`player-${oppIdx}`);
     }),
+    "Opponent plays WILD": button(() => triggerOpponentWildPlay()),
   });
+
+  // Color the top wild card adopts. "(none)" clears it (so an opponent wild
+  // play stays buffered). Picking a color promotes a buffered play and tints
+  // the top wild on the discard pile.
+  const wildControls = useControls("Wild color", {
+    chosen: {
+      value: "(none)",
+      options: ["(none)", "red", "yellow", "green", "blue"],
+    },
+  });
+  useEffect(() => {
+    setChosenColor(
+      wildControls.chosen === "(none)"
+        ? null
+        : (wildControls.chosen as LightColor),
+    );
+  }, [wildControls.chosen]);
 
   const handConfig = useControls("Hand", {
     screenY: { value: -0.8, min: -1.5, max: 0, step: 0.05 },
@@ -163,8 +194,9 @@ export function TestScene() {
   }, [cardCount, deckOffset, playerCount]);
 
   const mockGameState: GameState = useMemo(() => {
-    // Compute the deck "top" as the first FULL_DECK card not currently held
-    // or discarded — simulates what the server would expose.
+    // Fake "shuffled" draw pile = FULL_DECK minus anything currently held or
+    // discarded, in FULL_DECK order. Index 0 = bottom, last = top (matches
+    // server convention).
     const held = new Set<number>();
     for (const ids of Object.values(playerHands)) {
       for (const id of ids ?? []) held.add(id);
@@ -172,9 +204,11 @@ export function TestScene() {
     for (const ids of Object.values(extraCardIds)) {
       for (const id of ids ?? []) held.add(id);
     }
-    for (const c of discardPile) held.add(c.id);
+    for (const e of discardPile) held.add(e.card.id);
     for (const id of removedCardIds) held.add(id);
-    const topCard = FULL_DECK.find((c) => !held.has(c.id));
+    const drawPileCardIds = FULL_DECK.filter((c) => !held.has(c.id)).map(
+      (c) => c.id,
+    );
 
     return {
       phase: "playing",
@@ -184,10 +218,9 @@ export function TestScene() {
       discardTop: { color: "blue", value: 1 as CardValue },
       currentPlayerIndex: currentTurn % playerCount,
       direction: "clockwise",
-      drawPileCount: 112 - playerCount * cardCount - 1,
-      drawPileTopCardId: topCard?.id ?? null,
+      drawPileCardIds,
       hostId: "player-0",
-      chosenColor: null,
+      chosenColor,
       challengeTarget: null,
       scores: {},
       players: Array.from({ length: playerCount }, (_, i) => {
@@ -211,12 +244,12 @@ export function TestScene() {
   }, [
     playerCount,
     activeSide,
-    cardCount,
     currentTurn,
     playerHands,
     removedCardIds,
     extraCardIds,
     discardPile,
+    chosenColor,
   ]);
 
   const mockHand: PlayerHand = useMemo(
@@ -229,18 +262,24 @@ export function TestScene() {
     [playerHands, removedCardIds, extraCardIds],
   );
 
-  const handlePlayCard = useCallback((card: Card) => {
-    setDiscardPile((prev) => [...prev, card]);
-    setRemovedCardIds((prev) => new Set([...prev, card.id]));
-  }, []);
+  const handlePlayCard = useCallback(
+    (card: Card) => {
+      setDiscardPile((prev) => [...prev, { card, side: activeSide }]);
+      setRemovedCardIds((prev) => new Set([...prev, card.id]));
+    },
+    [activeSide],
+  );
 
-  const handleOpponentPlayComplete = useCallback(() => {
-    setOpponentPlay((current) => {
-      if (!current) return null;
-      setDiscardPile((prev) => [...prev, current.card]);
-      setRemovedCardIds((prev) => new Set([...prev, current.card.id]));
-      return null;
-    });
+  // PlayArea hands the played card back so we don't have to call
+  // setDiscardPile / setRemovedCardIds inside a setOpponentPlay updater
+  // (which would double-fire under StrictMode).
+  const handleOpponentPlayComplete = useCallback((play: OpponentPlay) => {
+    setDiscardPile((prev) => [
+      ...prev,
+      { card: play.card, side: play.sidePlayedOn },
+    ]);
+    setRemovedCardIds((prev) => new Set([...prev, play.card.id]));
+    setOpponentPlay(null);
   }, []);
 
   const handleDrawComplete = useCallback((card: Card, playerId: string) => {
@@ -263,7 +302,7 @@ export function TestScene() {
       for (const ids of Object.values(extraCardIds)) {
         for (const id of ids ?? []) held.add(id);
       }
-      for (const c of discardPile) held.add(c.id);
+      for (const e of discardPile) held.add(e.card.id);
       for (const id of removedCardIds) held.add(id);
       const next = FULL_DECK.find((c) => !held.has(c.id));
       if (!next) return;
@@ -290,8 +329,70 @@ export function TestScene() {
     if (cardId === undefined) return;
     const card = DECK_MAP.get(cardId);
     if (!card) return;
-    setOpponentPlay({ playerId: pick.id, card });
-  }, [opponentPlay, playerCount, playerHands, removedCardIds]);
+    setOpponentPlay({ playerId: pick.id, card, sidePlayedOn: activeSide });
+  }, [opponentPlay, playerCount, playerHands, removedCardIds, activeSide]);
+
+  // Force an opponent to play a wild card. Pulls one out of any opponent's
+  // hand if present, otherwise grabs a wild from the undealt deck and pins
+  // it to a random opponent (so the buffering can be exercised even when
+  // round-robin didn't deal one).
+  const triggerOpponentWildPlay = useCallback(() => {
+    if (opponentPlay) return;
+
+    // First, try to find a wild already in someone's hand.
+    for (let i = 1; i < playerCount; i++) {
+      const ids = (playerHands[`player-${i}`] ?? []).filter(
+        (id) => !removedCardIds.has(id),
+      );
+      for (const id of ids) {
+        const card = DECK_MAP.get(id);
+        if (!card) continue;
+        const face = activeSide === "light" ? card.light : card.dark;
+        if (face.color === "wild") {
+          setOpponentPlay({
+            playerId: `player-${i}`,
+            card,
+            sidePlayedOn: activeSide,
+          });
+          return;
+        }
+      }
+    }
+
+    // None in hand — grab any wild from the undealt remainder.
+    const held = new Set<number>();
+    for (const ids of Object.values(playerHands)) {
+      for (const id of ids ?? []) held.add(id);
+    }
+    for (const ids of Object.values(extraCardIds)) {
+      for (const id of ids ?? []) held.add(id);
+    }
+    for (const e of discardPile) held.add(e.card.id);
+    for (const id of removedCardIds) held.add(id);
+
+    const wildCard = FULL_DECK.find((c) => {
+      if (held.has(c.id)) return false;
+      const face = activeSide === "light" ? c.light : c.dark;
+      return face.color === "wild";
+    });
+    if (!wildCard) return;
+
+    const oppIdx = 1 + Math.floor(Math.random() * Math.max(playerCount - 1, 1));
+    if (oppIdx >= playerCount) return;
+    setOpponentPlay({
+      playerId: `player-${oppIdx}`,
+      card: wildCard,
+      sidePlayedOn: activeSide,
+    });
+  }, [
+    opponentPlay,
+    playerCount,
+    playerHands,
+    extraCardIds,
+    discardPile,
+    removedCardIds,
+    activeSide,
+  ]);
 
   return (
     <>

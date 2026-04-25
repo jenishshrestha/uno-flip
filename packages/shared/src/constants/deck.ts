@@ -180,6 +180,17 @@ export const DECK_MAP: ReadonlyMap<number, Card> = new Map(
   FULL_DECK.map((card) => [card.id, card]),
 );
 
+// Resolve a list of card IDs into Card objects. Unknown IDs are dropped
+// (defensive against malformed payloads / negative placeholder ids).
+export function resolveCardIds(ids: readonly number[]): Card[] {
+  const result: Card[] = [];
+  for (const id of ids) {
+    const card = DECK_MAP.get(id);
+    if (card) result.push(card);
+  }
+  return result;
+}
+
 // Sanity check
 if (FULL_DECK.length !== 112) {
   throw new Error(`Deck should have 112 cards, but has ${FULL_DECK.length}`);
