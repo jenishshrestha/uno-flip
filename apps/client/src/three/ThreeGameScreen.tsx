@@ -55,6 +55,7 @@ import {
   CAMERA_NEAR,
   CAMERA_POSITION,
 } from "./utils/constants.js";
+import { projectScreenPercentToY0 } from "./utils/screenProject.js";
 
 // Must match OpponentHand3D's layout constants
 const OPP_CARD_SPACING = 0.15;
@@ -71,14 +72,7 @@ function getOpponentCardPose(
   slotIndex: number,
   activeSide: ActiveSide = "light",
 ): ThrowPose {
-  const ndcX = (opp.screenLeft / 100) * 2 - 1;
-  const ndcY = -((opp.screenTop / 100) * 2 - 1);
-  const ndc = new Vector3(ndcX, ndcY, 0.5);
-  ndc.unproject(camera);
-  const dir = ndc.sub(camera.position).normalize();
-  const t = -camera.position.y / dir.y;
-  const hit = camera.position.clone().add(dir.multiplyScalar(t));
-
+  const hit = projectScreenPercentToY0(camera, opp.screenLeft, opp.screenTop);
   const count = opp.cards.length;
   const spacing = Math.min(OPP_CARD_SPACING, 2 / Math.max(count, 1));
   const totalWidth = (count - 1) * spacing;
@@ -513,12 +507,10 @@ function CameraSetup() {
 
 const PAD = 5; // % padding from screen edges
 
-function tToPosition(t: number): { left: string; top: string } {
+function tToPosition(t: number): { left: number; top: number } {
   t = Math.max(0, Math.min(1, t));
-
   let left: number;
   let top: number;
-
   if (t <= 1 / 3) {
     // Left edge: going UP (bottom → top)
     const seg = t / (1 / 3);
@@ -535,8 +527,7 @@ function tToPosition(t: number): { left: string; top: string } {
     left = 100 - PAD;
     top = PAD + seg * (100 - 2 * PAD);
   }
-
-  return { left: `${left}%`, top: `${top}%` };
+  return { left, top };
 }
 
 // Presets for classic small-count layouts
@@ -546,28 +537,7 @@ const PRESETS: Record<number, number[]> = {
   3: [1 / 6, 0.5, 5 / 6], // left, top-center, right
 };
 
-// Numeric version for 3D positioning
-function tToPositionNumeric(t: number): { left: number; top: number } {
-  t = Math.max(0, Math.min(1, t));
-  let left: number;
-  let top: number;
-  if (t <= 1 / 3) {
-    const seg = t / (1 / 3);
-    left = PAD;
-    top = 100 - PAD - seg * (100 - 2 * PAD);
-  } else if (t <= 2 / 3) {
-    const seg = (t - 1 / 3) / (1 / 3);
-    left = PAD + seg * (100 - 2 * PAD);
-    top = PAD;
-  } else {
-    const seg = (t - 2 / 3) / (1 / 3);
-    left = 100 - PAD;
-    top = PAD + seg * (100 - 2 * PAD);
-  }
-  return { left, top };
-}
-
-function getOpponentPositionsNumeric(
+function getOpponentPositions(
   opponentCount: number,
 ): Array<{ top: number; left: number }> {
   if (opponentCount === 0) return [];
@@ -577,21 +547,6 @@ function getOpponentPositionsNumeric(
       { length: opponentCount },
       (_, i) => (i + 1) / (opponentCount + 1),
     );
-  return tValues.map(tToPositionNumeric);
-}
-
-function getOpponentPositions(
-  opponentCount: number,
-): Array<{ top: string; left: string }> {
-  if (opponentCount === 0) return [];
-
-  const tValues =
-    PRESETS[opponentCount] ??
-    Array.from(
-      { length: opponentCount },
-      (_, i) => (i + 1) / (opponentCount + 1),
-    );
-
   return tValues.map(tToPosition);
 }
 
@@ -737,14 +692,16 @@ export function ThreeGameScreen({
     return list;
   }, [gameState.players, myIndex]);
 
-  const seats = getOpponentPositions(opponents.length);
-  const seatsNumeric = getOpponentPositionsNumeric(opponents.length);
+  const seats = useMemo(
+    () => getOpponentPositions(opponents.length),
+    [opponents.length],
+  );
 
   const opponentSeats: OpponentSeat[] = useMemo(
     () =>
       opponents
         .map((opp, i) => {
-          const seat = seatsNumeric[i];
+          const seat = seats[i];
           if (!opp || !seat) return null;
           return {
             id: opp.id,
@@ -754,7 +711,7 @@ export function ThreeGameScreen({
           };
         })
         .filter((s): s is OpponentSeat => s !== null),
-    [opponents, seatsNumeric, allPlayerCards],
+    [opponents, seats, allPlayerCards],
   );
 
   return (
@@ -799,7 +756,7 @@ export function ThreeGameScreen({
                   cards: myCards,
                 },
                 ...opponents.map((opp, i) => {
-                  const seat = seatsNumeric[i];
+                  const seat = seats[i];
                   const oppId = opp?.id ?? `opp-${i}`;
                   return {
                     id: oppId,
@@ -957,8 +914,8 @@ export function ThreeGameScreen({
             key={opp.id}
             style={{
               position: "absolute",
-              top: seat.top,
-              left: seat.left,
+              top: `${seat.top}%`,
+              left: `${seat.left}%`,
               transform: "translate(-50%, -50%)",
               display: "flex",
               flexDirection: "column",

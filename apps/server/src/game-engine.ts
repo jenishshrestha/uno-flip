@@ -8,7 +8,7 @@ import type {
   GameState,
   PublicPlayer,
 } from "@uno-flip/shared";
-import { canPlayCard, GAME_RULES, isWildDrawLegal } from "@uno-flip/shared";
+import { canPlayCard, GAME_RULES, getActiveFace } from "@uno-flip/shared";
 import { drawUntilColor, forceDrawCards, resolveAction } from "./actions.js";
 import {
   createDeck,
@@ -17,6 +17,7 @@ import {
   discard,
   drawCard,
   getDiscardTop,
+  shuffle,
 } from "./deck.js";
 import { calculateRoundScores, totalWinnerPoints } from "./scoring.js";
 
@@ -100,12 +101,7 @@ function applyTestHands(
   }
 
   // Re-shuffle the remaining draw pile so flipStartingCard stays random.
-  for (let i = game.deck.drawPile.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const temp = game.deck.drawPile[i] as Card;
-    game.deck.drawPile[i] = game.deck.drawPile[j] as Card;
-    game.deck.drawPile[j] = temp;
-  }
+  game.deck.drawPile = shuffle(game.deck.drawPile);
 }
 
 // ─── Internal game state (server only) ───
@@ -123,11 +119,9 @@ export interface GameInstance {
   calledUno: Set<string>;
   cumulativeScores: Map<string, number>;
   connectedPlayers: Set<string>; // tracks who is currently connected
-  // Challenge state
-  challengeTarget: string | null; // player who can challenge
-  challengedPlayerId: string | null; // player who played the wild draw
-  pendingDrawAction: CardValue | null; // the wild draw card value being challenged
-  wildDrawWasLegal: boolean; // was the wild draw played legally? (for challenge resolution)
+  // Set when a wild_draw_two/color is played; cleared in selectColor after
+  // the draw effect is applied. Tells selectColor which draw to apply.
+  pendingDrawAction: CardValue | null;
 }
 
 // ─── Create a new game ───
@@ -148,10 +142,7 @@ export function createGame(
     calledUno: new Set(),
     cumulativeScores: new Map(players.map((p) => [p.id, 0])),
     connectedPlayers: new Set(players.map((p) => p.id)),
-    challengeTarget: null,
-    challengedPlayerId: null,
     pendingDrawAction: null,
-    wildDrawWasLegal: true,
   };
 
   // Deal 7 cards to each player
@@ -185,13 +176,7 @@ function flipStartingCard(game: GameInstance): void {
     // Keep the already-dealt hands intact.
     game.deck.discardPile.pop();
     game.deck.drawPile.push(card);
-    // Shuffle draw pile
-    for (let i = game.deck.drawPile.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const temp = game.deck.drawPile[i] as Card;
-      game.deck.drawPile[i] = game.deck.drawPile[j] as Card;
-      game.deck.drawPile[j] = temp;
-    }
+    game.deck.drawPile = shuffle(game.deck.drawPile);
     flipStartingCard(game);
     return;
   }
@@ -286,19 +271,8 @@ export function playCard(
     return { success: false, error: "Can't play that card" };
   }
 
-  const cardFace = game.activeSide === "light" ? card.light : card.dark;
+  const cardFace = getActiveFace(card, game.activeSide);
   const action = resolveAction(cardFace.value);
-
-  // Track wild draw legality BEFORE removing the card from hand
-  // (the card is still in hand, so isWildDrawLegal checks correctly)
-  if (action.isWildDraw) {
-    game.wildDrawWasLegal = isWildDrawLegal(
-      hand,
-      game.discardTopSide ?? cardFace,
-      game.activeSide,
-      game.chosenColor,
-    );
-  }
 
   // Remove card from hand, place on discard
   hand.splice(cardIndex, 1);
@@ -331,9 +305,9 @@ export function playCard(
   // If wild card, wait for color choice before advancing
   if (action.needsColorChoice) {
     game.phase = "choosing_color";
-    // Track if this was a wild draw (for challenge after color choice)
+    // Wild draw cards: remember which one so selectColor can apply the right
+    // forced-draw effect to the next player after the color is picked.
     if (action.isWildDraw) {
-      game.challengedPlayerId = playerId;
       game.pendingDrawAction = cardFace.value;
     }
     return result;
@@ -493,7 +467,7 @@ export function selectColor(
       result.drawTargetId = targetId;
       advanceTurn(game); // skip past the target
     }
-    clearChallengeState(game);
+    game.pendingDrawAction = null;
     game.phase = "playing";
     return result;
   }
@@ -549,8 +523,7 @@ function performFlip(game: GameInstance): void {
   // against its new side.
   const topCard = getDiscardTop(game.deck);
   if (topCard) {
-    game.discardTopSide =
-      game.activeSide === "light" ? topCard.light : topCard.dark;
+    game.discardTopSide = getActiveFace(topCard, game.activeSide);
   }
 }
 
@@ -560,14 +533,6 @@ function advanceTurn(game: GameInstance): void {
   game.currentPlayerIndex =
     (game.currentPlayerIndex + step + game.playerIds.length) %
     game.playerIds.length;
-}
-
-// ─── Clear challenge state ───
-function clearChallengeState(game: GameInstance): void {
-  game.challengeTarget = null;
-  game.challengedPlayerId = null;
-  game.pendingDrawAction = null;
-  game.wildDrawWasLegal = true;
 }
 
 // ─── Handle round win ───
@@ -655,7 +620,6 @@ export function getPublicGameState(
     drawPileCardIds: game.deck.drawPile.map((c) => c.id),
     hostId,
     chosenColor: game.chosenColor,
-    challengeTarget: game.challengeTarget,
     scores: Object.fromEntries(game.cumulativeScores),
   };
 }
@@ -719,9 +683,6 @@ export function reconnectPlayer(
 
   game.connectedPlayers.delete(oldId);
   game.connectedPlayers.add(newId);
-
-  if (game.challengeTarget === oldId) game.challengeTarget = newId;
-  if (game.challengedPlayerId === oldId) game.challengedPlayerId = newId;
 }
 
 // ─── Start the next round (keeps cumulative scores) ───

@@ -1,4 +1,4 @@
-import type { Card, CardSide, CardValue } from "../types/card.js";
+import type { ActiveSide, Card, CardSide, CardValue } from "../types/card.js";
 
 // ─── Official UNO Flip deck with exact light/dark pairings ───
 // From physical card list (CARDS_LIST.md)
@@ -189,6 +189,13 @@ export function resolveCardIds(ids: readonly number[]): Card[] {
     if (card) result.push(card);
   }
   return result;
+}
+
+// Pick the face of a card that's currently visible based on activeSide.
+// Replaces the `activeSide === "light" ? card.light : card.dark` ternary
+// repeated across the codebase.
+export function getActiveFace(card: Card, activeSide: ActiveSide): CardSide {
+  return activeSide === "light" ? card.light : card.dark;
 }
 
 // Sanity check

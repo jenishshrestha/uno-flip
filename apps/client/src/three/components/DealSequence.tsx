@@ -3,7 +3,7 @@ import type { ActiveSide, Card } from "@uno-flip/shared";
 import gsap from "gsap";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Group } from "three";
-import { Vector3 } from "three";
+import { projectScreenPercentToY0 } from "../utils/screenProject.js";
 import { Card3D } from "./Card3D.js";
 
 interface PlayerTarget {
@@ -40,14 +40,8 @@ export function DealSequence({
 
   const worldTargets = useMemo(() => {
     return players.map((p) => {
-      const ndcX = (p.screenX / 100) * 2 - 1;
-      const ndcY = -((p.screenY / 100) * 2 - 1);
-      const ndc = new Vector3(ndcX, ndcY, 0.5);
-      ndc.unproject(camera);
-      const dir = ndc.sub(camera.position).normalize();
-      const t = -camera.position.y / dir.y;
-      const hit = camera.position.clone().add(dir.multiplyScalar(t));
-      return { ...p, worldX: hit.x, worldZ: hit.z };
+      const { x, z } = projectScreenPercentToY0(camera, p.screenX, p.screenY);
+      return { ...p, worldX: x, worldZ: z };
     });
   }, [camera, players]);
 

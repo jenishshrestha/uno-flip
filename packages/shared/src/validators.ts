@@ -1,3 +1,4 @@
+import { getActiveFace } from "./constants/deck.js";
 import type { ActiveSide, Card, CardSide } from "./types/card.js";
 
 // ─── Can this card be played on the current discard top? ───
@@ -7,7 +8,7 @@ export function canPlayCard(
   activeSide: ActiveSide,
   chosenColor: string | null,
 ): boolean {
-  const cardFace = activeSide === "light" ? card.light : card.dark;
+  const cardFace = getActiveFace(card, activeSide);
 
   // Wild cards are always playable (but wild draw has restrictions checked separately)
   if (cardFace.color === "wild") {
@@ -45,7 +46,7 @@ export function isWildDrawLegal(
 
   // Check if the player has ANY card matching the active color
   for (const card of hand) {
-    const face = activeSide === "light" ? card.light : card.dark;
+    const face = getActiveFace(card, activeSide);
     if (face.color === activeColor) {
       return false; // has a matching color — wild draw is ILLEGAL
     }

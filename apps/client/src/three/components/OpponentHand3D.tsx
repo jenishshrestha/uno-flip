@@ -3,8 +3,8 @@ import type { ActiveSide, Card } from "@uno-flip/shared";
 import gsap from "gsap";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Group } from "three";
-import { Vector3 } from "three";
 import { useFanFlipAnimation } from "../hooks/useAnimations.js";
+import { projectScreenPercentToY0 } from "../utils/screenProject.js";
 import { Card3D } from "./Card3D.js";
 
 const CARD_SPACING = 0.15;
@@ -31,16 +31,10 @@ export function OpponentHand3D({
   const cardRefs = useRef<(Group | null)[]>([]);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-  const worldPos = useMemo(() => {
-    const ndcX = (screenLeft / 100) * 2 - 1;
-    const ndcY = -((screenTop / 100) * 2 - 1);
-    const ndc = new Vector3(ndcX, ndcY, 0.5);
-    ndc.unproject(camera);
-    const dir = ndc.sub(camera.position).normalize();
-    const t = -camera.position.y / dir.y;
-    const hit = camera.position.clone().add(dir.multiplyScalar(t));
-    return { x: hit.x, z: hit.z };
-  }, [camera, screenLeft, screenTop]);
+  const worldPos = useMemo(
+    () => projectScreenPercentToY0(camera, screenLeft, screenTop),
+    [camera, screenLeft, screenTop],
+  );
 
   const positions = useMemo(() => {
     const count = cards.length;

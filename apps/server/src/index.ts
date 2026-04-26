@@ -83,7 +83,6 @@ function lobbyState(room: {
     drawPileCardIds: [],
     hostId: room.hostId,
     chosenColor: null,
-    challengeTarget: null,
     scores: {},
   };
 }

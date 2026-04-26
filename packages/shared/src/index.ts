@@ -1,5 +1,10 @@
 // Constants
-export { DECK_MAP, FULL_DECK, resolveCardIds } from "./constants/deck.js";
+export {
+  DECK_MAP,
+  FULL_DECK,
+  getActiveFace,
+  resolveCardIds,
+} from "./constants/deck.js";
 export { CARD_POINTS, GAME_RULES } from "./constants/rules.js";
 // Types
 export type {

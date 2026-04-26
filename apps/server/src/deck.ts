@@ -1,9 +1,8 @@
 import type { Card, CardSide } from "@uno-flip/shared";
 import { FULL_DECK } from "@uno-flip/shared";
 
-// ─── Fisher-Yates shuffle (the gold standard for randomizing arrays) ───
-// Think of it like pulling random cards from a pile one by one
-function shuffle<T>(array: T[]): T[] {
+// ─── Fisher-Yates shuffle ───
+export function shuffle<T>(array: T[]): T[] {
   const shuffled = [...array];
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));

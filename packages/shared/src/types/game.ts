@@ -6,7 +6,6 @@ export type GamePhase =
   | "dealing"
   | "playing"
   | "choosing_color"
-  | "awaiting_challenge"
   | "round_over"
   | "game_over";
 
@@ -39,7 +38,6 @@ export interface GameState {
   drawPileCardIds: number[];
   hostId: string;
   chosenColor: string | null;
-  challengeTarget: string | null;
   scores: Record<string, number>;
 }
 

@@ -1,4 +1,5 @@
 import type { ActiveSide, Card, CardValue } from "@uno-flip/shared";
+import { getActiveFace } from "@uno-flip/shared";
 import type { DeckState } from "./deck.js";
 import { drawCard } from "./deck.js";
 
@@ -108,7 +109,7 @@ export function drawUntilColor(
     hand.push(card);
     drawn.push(card);
 
-    const face = activeSide === "light" ? card.light : card.dark;
+    const face = getActiveFace(card, activeSide);
     if (face.color === targetColor) break;
   }
 

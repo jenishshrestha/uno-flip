@@ -4,6 +4,7 @@ import gsap from "gsap";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { type Camera, Euler, type Group, Quaternion, Vector3 } from "three";
 import { CARD_DEPTH } from "../utils/constants.js";
+import { projectScreenPercentToY0 } from "../utils/screenProject.js";
 import { Card3D } from "./Card3D.js";
 
 // How many top cards to actually render
@@ -50,15 +51,7 @@ export function getDiscardWorldPos(
   camera: Camera,
   config: DiscardConfig,
 ): { x: number; z: number } {
-  const ndcX = (config.screenLeft / 100) * 2 - 1;
-  const ndcY = -((config.screenTop / 100) * 2 - 1);
-  const ndc = new Vector3(ndcX, ndcY, 0.5);
-  ndc.unproject(camera);
-  const dir = ndc.sub(camera.position).normalize();
-  if (Math.abs(dir.y) < 1e-6) return { x: 0, z: 0 };
-  const t = -camera.position.y / dir.y;
-  const hit = camera.position.clone().add(dir.multiplyScalar(t));
-  return { x: hit.x, z: hit.z };
+  return projectScreenPercentToY0(camera, config.screenLeft, config.screenTop);
 }
 
 // Deterministic per-card jitter so every thrown card ends up in the exact

@@ -4,6 +4,7 @@ import gsap from "gsap";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type Camera, Euler, type Group, Quaternion, Vector3 } from "three";
 import { useFanFlipAnimation } from "../hooks/useAnimations.js";
+import { projectNdcToY0 } from "../utils/screenProject.js";
 import { Card3D } from "./Card3D.js";
 
 export interface HandConfig {
@@ -20,17 +21,13 @@ export const DEFAULT_HAND_CONFIG: HandConfig = {
   cardScale: 1.0,
 };
 
-// Project hand's screen Y onto the Y=0 world plane.
+// Project hand's screen Y onto the Y=0 world plane. screenY is already
+// in NDC space (-1 bottom, 1 top), screenX is centered on 0.
 export function getHandWorldPos(
   camera: Camera,
   config: HandConfig,
 ): { x: number; z: number } {
-  const ndc = new Vector3(0, config.screenY, 0.5);
-  ndc.unproject(camera);
-  const dir = ndc.sub(camera.position).normalize();
-  const t = -camera.position.y / dir.y;
-  const hit = camera.position.clone().add(dir.multiplyScalar(t));
-  return { x: hit.x, z: hit.z };
+  return projectNdcToY0(camera, 0, config.screenY);
 }
 
 // World pose for one card slot in the fan. Mirrors the internal layout math
@@ -107,14 +104,10 @@ export function PlayerHand3D({
   const cardRefs = useRef<(Group | null)[]>([]);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-  const handWorldPos = useMemo(() => {
-    const ndc = new Vector3(0, screenY, 0.5);
-    ndc.unproject(camera);
-    const dir = ndc.sub(camera.position).normalize();
-    const t = -camera.position.y / dir.y;
-    const hit = camera.position.clone().add(dir.multiplyScalar(t));
-    return { x: hit.x, z: hit.z };
-  }, [camera, screenY]);
+  const handWorldPos = useMemo(
+    () => projectNdcToY0(camera, 0, screenY),
+    [camera, screenY],
+  );
 
   const positions = useMemo(() => {
     const count = cards.length;

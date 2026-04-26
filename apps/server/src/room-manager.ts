@@ -17,6 +17,9 @@ interface Room {
 
 // ─── All active rooms, keyed by room code ───
 const rooms = new Map<string, Room>();
+// O(1) socket → room lookup so per-event handlers (PLAY_CARD, DRAW_CARD,
+// SELECT_COLOR, etc.) don't have to scan every room.
+const socketToRoomCode = new Map<string, string>();
 
 // ─── Generate a random 4-letter room code like "ABCD" ───
 function generateRoomCode(): string {
@@ -71,17 +74,14 @@ export function joinRoom(
     connected: true,
   };
   room.players.push(player);
+  socketToRoomCode.set(playerId, room.code);
   return { room, player };
 }
 
-// ─── Find which room a player is in ───
+// ─── Find which room a player is in (O(1) via socket index) ───
 export function findRoomByPlayerId(playerId: string): Room | undefined {
-  for (const room of rooms.values()) {
-    if (room.players.some((p) => p.id === playerId)) {
-      return room;
-    }
-  }
-  return undefined;
+  const code = socketToRoomCode.get(playerId);
+  return code ? rooms.get(code) : undefined;
 }
 
 // ─── Remove a player from their room ───
@@ -95,13 +95,17 @@ export function removePlayer(
   const wasHost = room.hostId === playerId;
 
   if (room.gameStarted) {
-    // Mid-game: mark disconnected, keep them for reconnection
+    // Mid-game: mark disconnected, keep them for reconnection.
+    // We DO drop the socket → room mapping though — the new socket id from
+    // rejoinRoom will repopulate it.
     const player = room.players.find((p) => p.id === playerId);
     if (player) player.connected = false;
+    socketToRoomCode.delete(playerId);
 
     // If everyone disconnected, delete the room
     const anyoneConnected = room.players.some((p) => p.connected);
     if (!anyoneConnected) {
+      for (const p of room.players) socketToRoomCode.delete(p.id);
       rooms.delete(room.code);
       return { room, wasHost, midGame: false };
     }
@@ -118,6 +122,7 @@ export function removePlayer(
 
   // Lobby: fully remove
   room.players = room.players.filter((p) => p.id !== playerId);
+  socketToRoomCode.delete(playerId);
 
   if (room.players.length === 0) {
     rooms.delete(room.code);
@@ -149,6 +154,8 @@ export function rejoinRoom(
   const oldSocketId = player.id;
   player.id = newSocketId;
   player.connected = true;
+  socketToRoomCode.delete(oldSocketId);
+  socketToRoomCode.set(newSocketId, room.code);
 
   if (room.hostId === oldSocketId) {
     room.hostId = newSocketId;

@@ -6,7 +6,7 @@ import type {
   LightColor,
   PlayerHand,
 } from "@uno-flip/shared";
-import { DECK_MAP, FULL_DECK } from "@uno-flip/shared";
+import { DECK_MAP, FULL_DECK, getActiveFace } from "@uno-flip/shared";
 import { button, Leva, useControls } from "leva";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DiscardEntry } from "./components/DiscardPile3D.js";
@@ -221,7 +221,6 @@ export function TestScene() {
       drawPileCardIds,
       hostId: "player-0",
       chosenColor,
-      challengeTarget: null,
       scores: {},
       players: Array.from({ length: playerCount }, (_, i) => {
         const initial = (playerHands[`player-${i}`] ?? []).filter(
@@ -347,7 +346,7 @@ export function TestScene() {
       for (const id of ids) {
         const card = DECK_MAP.get(id);
         if (!card) continue;
-        const face = activeSide === "light" ? card.light : card.dark;
+        const face = getActiveFace(card, activeSide);
         if (face.color === "wild") {
           setOpponentPlay({
             playerId: `player-${i}`,
@@ -372,7 +371,7 @@ export function TestScene() {
 
     const wildCard = FULL_DECK.find((c) => {
       if (held.has(c.id)) return false;
-      const face = activeSide === "light" ? c.light : c.dark;
+      const face = getActiveFace(c, activeSide);
       return face.color === "wild";
     });
     if (!wildCard) return;

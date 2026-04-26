@@ -7,7 +7,7 @@ import type {
   PublicPlayer,
 } from "@uno-flip/shared";
 import { DECK_MAP } from "@uno-flip/shared";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import "./App.css";
 import { ScoreScreen } from "./screens/ScoreScreen.js";
@@ -113,28 +113,41 @@ function App() {
       });
   }, [hash]);
 
-  // Socket events
+  // Latest gameState / players for handlers — they're registered once with
+  // empty deps so the closure can't read fresh React state directly. Refs
+  // bridge that gap without causing the listener to re-bind on every change.
+  const gameStateRef = useRef<GameState | null>(null);
+  const playersRef = useRef<PublicPlayer[]>([]);
   useEffect(() => {
-    socket.on("connect", () => setConnected(true));
-    socket.on("disconnect", () => setConnected(false));
+    gameStateRef.current = gameState;
+  }, [gameState]);
+  useEffect(() => {
+    playersRef.current = players;
+  }, [players]);
 
-    socket.on("ROOM_CREATED", ({ roomCode }) => {
+  // Socket events — registered once on mount, passing function refs to
+  // socket.off so we don't accidentally remove other listeners.
+  useEffect(() => {
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
+
+    const onRoomCreated = ({ roomCode }: { roomCode: string }) => {
       setRoomValid(true);
       navigate(`/room/${roomCode}`);
-    });
+    };
 
-    socket.on("PLAYER_JOINED", ({ player }) => {
+    const onPlayerJoined = ({ player }: { player: PublicPlayer }) => {
       setPlayers((prev) => {
         if (prev.some((p) => p.id === player.id)) return prev;
         return [...prev, player];
       });
-    });
+    };
 
-    socket.on("PLAYER_LEFT", ({ playerId }) => {
+    const onPlayerLeft = ({ playerId }: { playerId: string }) => {
       setPlayers((prev) => prev.filter((p) => p.id !== playerId));
-    });
+    };
 
-    socket.on("GAME_STATE", ({ gameState: gs }) => {
+    const onGameState = ({ gameState: gs }: { gameState: GameState }) => {
       setGameState(gs);
       setPlayers(gs.players);
       setHostId(gs.hostId);
@@ -146,19 +159,29 @@ function App() {
         setDrawQueue([]);
         setPendingFlipCardId(null);
       }
-    });
+    };
 
-    socket.on("HAND_UPDATE", ({ hand: h }) => {
+    const onHandUpdate = ({ hand: h }: { hand: PlayerHand }) => {
       setHand(h);
-    });
+    };
 
-    socket.on("DEAL_CARDS", ({ discardTopCardId }) => {
+    const onDealCards = ({
+      discardTopCardId,
+    }: {
+      discardTopCardId: number;
+    }) => {
       const top = DECK_MAP.get(discardTopCardId);
       // Game always starts on light.
       setDiscardPile(top ? [{ card: top, side: "light" }] : []);
-    });
+    };
 
-    socket.on("CARD_PLAYED", ({ playerId, cardId }) => {
+    const onCardPlayed = ({
+      playerId,
+      cardId,
+    }: {
+      playerId: string;
+      cardId: number;
+    }) => {
       const card = DECK_MAP.get(cardId);
       if (!card) return;
       if (playerId === socket.id) {
@@ -170,24 +193,30 @@ function App() {
       // this ensures the thrown card lands on the face it was played on.
       // PlayArea handles the wild-card buffering (it waits for chosenColor
       // before firing the throw).
-      const sidePlayedOn = gameState?.activeSide ?? "light";
+      const sidePlayedOn = gameStateRef.current?.activeSide ?? "light";
       setOpponentPlay({ playerId, card, sidePlayedOn });
-    });
+    };
 
-    socket.on("CARD_DRAWN", ({ playerId, cardId }) => {
+    const onCardDrawn = ({
+      playerId,
+      cardId,
+    }: {
+      playerId: string;
+      cardId: number;
+    }) => {
       // Append to the queue. PlayArea animates the head and we pop on
       // completion. Multi-card forced draws (e.g. draw_five) arrive as
       // a burst of CARD_DRAWN events and animate one after another.
       setDrawQueue((q) => [...q, { playerId, cardId }]);
-    });
+    };
 
-    socket.on("COLOR_CHOSEN", ({ color }) => {
+    const onColorChosen = ({ color }: { color: LightColor | DarkColor }) => {
       // Discrete event so the cue plays for every client even if the same
       // color is picked twice in a row (gameState.chosenColor wouldn't change).
       playColorSound(color);
-    });
+    };
 
-    socket.on("FLIP_EVENT", ({ cardId }) => {
+    const onFlipEvent = ({ cardId }: { cardId: number }) => {
       // No pile reorder. The flip card stays on top; we just queue a side
       // change for that specific entry. The DiscardCard component will
       // animate the 180° flip when the entry's side changes (which happens
@@ -196,36 +225,50 @@ function App() {
       setFlipShowing(true);
       setTimeout(() => setFlipShowing(false), 1200);
       toast("FLIP! All cards flipped!");
-    });
+    };
 
-    socket.on("UNO_CALLED", ({ playerName, playerId }) => {
+    const onUnoCalled = ({
+      playerName,
+      playerId,
+    }: {
+      playerName: string;
+      playerId: string;
+    }) => {
       playUnoSound();
       if (playerId === socket.id) {
         toast.success("You called UNO!");
       } else {
         toast(`${playerName} called UNO!`);
       }
-    });
+    };
 
-    socket.on("UNO_CAUGHT", ({ targetName, targetId }) => {
+    const onUnoCaught = ({
+      targetName,
+      targetId,
+    }: {
+      targetName: string;
+      targetId: string;
+    }) => {
       if (targetId === socket.id) {
         toast.error("You were caught! Draw 2 cards");
       } else {
         toast(`${targetName} was caught! +2 cards`);
       }
-    });
+    };
 
-    socket.on("ROUND_OVER", ({ winnerId }) => {
-      const name = players.find((p) => p.id === winnerId)?.name ?? "Someone";
+    const onRoundOver = ({ winnerId }: { winnerId: string }) => {
+      const name =
+        playersRef.current.find((p) => p.id === winnerId)?.name ?? "Someone";
       toast.success(`${name} won the round!`);
-    });
+    };
 
-    socket.on("GAME_OVER", ({ winnerId }) => {
-      const name = players.find((p) => p.id === winnerId)?.name ?? "Someone";
+    const onGameOver = ({ winnerId }: { winnerId: string }) => {
+      const name =
+        playersRef.current.find((p) => p.id === winnerId)?.name ?? "Someone";
       toast.success(`${name} won the game!`);
-    });
+    };
 
-    socket.on("ERROR", ({ message }) => {
+    const onError = ({ message }: { message: string }) => {
       toast.error(message);
       // Roll back an optimistic play if the server rejected it.
       // Client-side validation should prevent this in normal play, but the
@@ -233,28 +276,46 @@ function App() {
       if (message === "Can't play that card" || message === "Not your turn") {
         setDiscardPile((prev) => prev.slice(0, -1));
       }
-    });
+    };
+
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("ROOM_CREATED", onRoomCreated);
+    socket.on("PLAYER_JOINED", onPlayerJoined);
+    socket.on("PLAYER_LEFT", onPlayerLeft);
+    socket.on("GAME_STATE", onGameState);
+    socket.on("HAND_UPDATE", onHandUpdate);
+    socket.on("DEAL_CARDS", onDealCards);
+    socket.on("CARD_PLAYED", onCardPlayed);
+    socket.on("CARD_DRAWN", onCardDrawn);
+    socket.on("COLOR_CHOSEN", onColorChosen);
+    socket.on("FLIP_EVENT", onFlipEvent);
+    socket.on("UNO_CALLED", onUnoCalled);
+    socket.on("UNO_CAUGHT", onUnoCaught);
+    socket.on("ROUND_OVER", onRoundOver);
+    socket.on("GAME_OVER", onGameOver);
+    socket.on("ERROR", onError);
 
     return () => {
-      socket.off("connect");
-      socket.off("disconnect");
-      socket.off("ROOM_CREATED");
-      socket.off("PLAYER_JOINED");
-      socket.off("PLAYER_LEFT");
-      socket.off("GAME_STATE");
-      socket.off("HAND_UPDATE");
-      socket.off("DEAL_CARDS");
-      socket.off("CARD_PLAYED");
-      socket.off("CARD_DRAWN");
-      socket.off("FLIP_EVENT");
-      socket.off("COLOR_CHOSEN");
-      socket.off("UNO_CALLED");
-      socket.off("UNO_CAUGHT");
-      socket.off("ROUND_OVER");
-      socket.off("GAME_OVER");
-      socket.off("ERROR");
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("ROOM_CREATED", onRoomCreated);
+      socket.off("PLAYER_JOINED", onPlayerJoined);
+      socket.off("PLAYER_LEFT", onPlayerLeft);
+      socket.off("GAME_STATE", onGameState);
+      socket.off("HAND_UPDATE", onHandUpdate);
+      socket.off("DEAL_CARDS", onDealCards);
+      socket.off("CARD_PLAYED", onCardPlayed);
+      socket.off("CARD_DRAWN", onCardDrawn);
+      socket.off("COLOR_CHOSEN", onColorChosen);
+      socket.off("FLIP_EVENT", onFlipEvent);
+      socket.off("UNO_CALLED", onUnoCalled);
+      socket.off("UNO_CAUGHT", onUnoCaught);
+      socket.off("ROUND_OVER", onRoundOver);
+      socket.off("GAME_OVER", onGameOver);
+      socket.off("ERROR", onError);
     };
-  }, [players, gameState]);
+  }, []);
 
   // Apply a pending FLIP_EVENT once (a) the flip card has actually landed in
   // the pile and (b) the new activeSide has arrived via GAME_STATE. A small

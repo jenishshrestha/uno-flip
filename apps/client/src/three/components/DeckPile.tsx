@@ -3,6 +3,7 @@ import type { ActiveSide, Card } from "@uno-flip/shared";
 import { useMemo } from "react";
 import { type Camera, Euler, Quaternion, Vector3 } from "three";
 import { CARD_DEPTH } from "../utils/constants.js";
+import { projectScreenPercentToY0 } from "../utils/screenProject.js";
 import { Card3D } from "./Card3D.js";
 
 const STACK_VISIBLE = 50;
@@ -32,15 +33,7 @@ export function getDeckWorldPos(
   camera: Camera,
   config: DeckConfig,
 ): { x: number; z: number } {
-  const ndcX = (config.screenLeft / 100) * 2 - 1;
-  const ndcY = -((config.screenTop / 100) * 2 - 1);
-  const ndc = new Vector3(ndcX, ndcY, 0.5);
-  ndc.unproject(camera);
-  const dir = ndc.sub(camera.position).normalize();
-  if (Math.abs(dir.y) < 1e-6) return { x: 0, z: 0 };
-  const t = -camera.position.y / dir.y;
-  const hit = camera.position.clone().add(dir.multiplyScalar(t));
-  return { x: hit.x, z: hit.z };
+  return projectScreenPercentToY0(camera, config.screenLeft, config.screenTop);
 }
 
 // World pose of the top card on the deck (the one that gets drawn next).
@@ -91,17 +84,10 @@ export function DeckPile({
   const { screenLeft, screenTop, scale, tiltX, tiltY, tiltZ } = config;
   const { camera } = useThree();
 
-  const worldPos = useMemo(() => {
-    const ndcX = (screenLeft / 100) * 2 - 1;
-    const ndcY = -((screenTop / 100) * 2 - 1);
-    const ndc = new Vector3(ndcX, ndcY, 0.5);
-    ndc.unproject(camera);
-    const dir = ndc.sub(camera.position).normalize();
-    if (Math.abs(dir.y) < 1e-6) return { x: 0, z: 0 };
-    const t = -camera.position.y / dir.y;
-    const hit = camera.position.clone().add(dir.multiplyScalar(t));
-    return { x: hit.x, z: hit.z };
-  }, [camera, screenLeft, screenTop]);
+  const worldPos = useMemo(
+    () => projectScreenPercentToY0(camera, screenLeft, screenTop),
+    [camera, screenLeft, screenTop],
+  );
 
   if (cards.length === 0) return null;
 

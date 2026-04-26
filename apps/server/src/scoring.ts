@@ -1,5 +1,5 @@
 import type { ActiveSide, Card } from "@uno-flip/shared";
-import { CARD_POINTS } from "@uno-flip/shared";
+import { CARD_POINTS, getActiveFace } from "@uno-flip/shared";
 
 // ─── Calculate points for cards left in a player's hand ───
 // The winner scores points based on what's stuck in OTHER players' hands.
@@ -9,7 +9,7 @@ export function calculateHandPoints(
   activeSide: ActiveSide,
 ): number {
   return hand.reduce((total, card) => {
-    const face = activeSide === "light" ? card.light : card.dark;
+    const face = getActiveFace(card, activeSide);
     return total + (CARD_POINTS[face.value] ?? 0);
   }, 0);
 }
