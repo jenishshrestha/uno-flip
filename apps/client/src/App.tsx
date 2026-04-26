@@ -6,19 +6,30 @@ import type {
   PlayerHand,
   PublicPlayer,
 } from "@uno-flip/shared";
-import { DECK_MAP } from "@uno-flip/shared";
+import { DECK_MAP, getActiveFace } from "@uno-flip/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import "./App.css";
 import { ScoreScreen } from "./screens/ScoreScreen.js";
 import { SERVER_URL, socket } from "./socket.js";
-import { playColorSound, playUnoSound } from "./sounds.js";
+import {
+  playColorSound,
+  playFlipCardSound,
+  playReverseSound,
+  playSkipSound,
+  playThrowSound,
+  playUnoSound,
+} from "./sounds.js";
 import { styles } from "./styles.js";
 import type { DiscardEntry } from "./three/components/DiscardPile3D.js";
 import { ColorPickerOverlay } from "./three/overlays/ColorPickerOverlay.js";
 import { FlipOverlay } from "./three/overlays/FlipOverlay.js";
 import { TestScene } from "./three/TestScene.js";
-import type { DrawRequest, OpponentPlay } from "./three/ThreeGameScreen.js";
+import type {
+  DrawRequest,
+  EmoteFlight,
+  OpponentPlay,
+} from "./three/ThreeGameScreen.js";
 import { ThreeGameScreen } from "./three/ThreeGameScreen.js";
 
 function getHash() {
@@ -82,6 +93,9 @@ function App() {
   const [pendingFlipCardId, setPendingFlipCardId] = useState<number | null>(
     null,
   );
+  // Active emote flights between players. Each entry self-removes when the
+  // flying-emoji animation finishes (handled by onEmoteFlightLand below).
+  const [emoteFlights, setEmoteFlights] = useState<EmoteFlight[]>([]);
   const isHost = hostId === socket.id;
   const currentPlayerId =
     gameState?.players[gameState.currentPlayerIndex]?.id ?? null;
@@ -158,6 +172,7 @@ function App() {
         setOpponentPlay(null);
         setDrawQueue([]);
         setPendingFlipCardId(null);
+        setEmoteFlights([]);
       }
     };
 
@@ -184,16 +199,21 @@ function App() {
     }) => {
       const card = DECK_MAP.get(cardId);
       if (!card) return;
+      // Action-card sound cues fire for everyone (including the player who
+      // played the card) so the table reacts in unison.
+      const sidePlayedOn = gameStateRef.current?.activeSide ?? "light";
+      const face = getActiveFace(card, sidePlayedOn);
+      if (face.value === "skip" || face.value === "skip_everyone") {
+        playSkipSound();
+      } else if (face.value === "reverse") {
+        playReverseSound();
+      }
       if (playerId === socket.id) {
         // Our own play — local animation + optimistic commit already handled.
         return;
       }
-      // Capture the side at play time. By the time the throw animation
-      // lands (~0.55s) FLIP_EVENT/GAME_STATE may have updated activeSide;
-      // this ensures the thrown card lands on the face it was played on.
       // PlayArea handles the wild-card buffering (it waits for chosenColor
       // before firing the throw).
-      const sidePlayedOn = gameStateRef.current?.activeSide ?? "light";
       setOpponentPlay({ playerId, card, sidePlayedOn });
     };
 
@@ -216,11 +236,28 @@ function App() {
       playColorSound(color);
     };
 
+    const onEmote = ({
+      fromId,
+      toId,
+      emote,
+    }: {
+      fromId: string;
+      toId: string;
+      emote: string;
+    }) => {
+      // Append a new flight; the in-component AnimatePresence + onComplete
+      // callback fires onEmoteFlightLand which removes it from the array.
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setEmoteFlights((prev) => [...prev, { id, fromId, toId, emote }]);
+      playThrowSound();
+    };
+
     const onFlipEvent = ({ cardId }: { cardId: number }) => {
       // No pile reorder. The flip card stays on top; we just queue a side
       // change for that specific entry. The DiscardCard component will
       // animate the 180° flip when the entry's side changes (which happens
       // either now or once the throw animation lands and adds the card).
+      playFlipCardSound();
       setPendingFlipCardId(cardId);
       setFlipShowing(true);
       setTimeout(() => setFlipShowing(false), 1200);
@@ -289,6 +326,7 @@ function App() {
     socket.on("CARD_PLAYED", onCardPlayed);
     socket.on("CARD_DRAWN", onCardDrawn);
     socket.on("COLOR_CHOSEN", onColorChosen);
+    socket.on("EMOTE", onEmote);
     socket.on("FLIP_EVENT", onFlipEvent);
     socket.on("UNO_CALLED", onUnoCalled);
     socket.on("UNO_CAUGHT", onUnoCaught);
@@ -308,6 +346,7 @@ function App() {
       socket.off("CARD_PLAYED", onCardPlayed);
       socket.off("CARD_DRAWN", onCardDrawn);
       socket.off("COLOR_CHOSEN", onColorChosen);
+      socket.off("EMOTE", onEmote);
       socket.off("FLIP_EVENT", onFlipEvent);
       socket.off("UNO_CALLED", onUnoCalled);
       socket.off("UNO_CAUGHT", onUnoCaught);
@@ -360,6 +399,14 @@ function App() {
 
   const handleCatchUno = useCallback((targetPlayerId: string) => {
     socket.emit("CATCH_UNO", { targetPlayerId });
+  }, []);
+
+  const handleSendEmote = useCallback((toId: string, emote: string) => {
+    socket.emit("SEND_EMOTE", { toId, emote });
+  }, []);
+
+  const handleEmoteFlightLand = useCallback((id: string) => {
+    setEmoteFlights((prev) => prev.filter((f) => f.id !== id));
   }, []);
 
   // Opponent throw animation finished — commit the flying card to the pile
@@ -424,6 +471,9 @@ function App() {
           showPass={false}
           onPass={handlePass}
           onCatchUno={handleCatchUno}
+          emoteFlights={emoteFlights}
+          onEmoteFlightLand={handleEmoteFlightLand}
+          onSendEmote={handleSendEmote}
         />
         <ColorPickerOverlay
           show={gameState.phase === "choosing_color" && isMyTurn}

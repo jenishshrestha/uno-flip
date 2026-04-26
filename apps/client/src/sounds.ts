@@ -12,6 +12,15 @@ pickSound.volume = 0.9;
 const drawSound = new Audio("/sounds/card-draw.mp3");
 drawSound.volume = 0.9;
 
+const flipCardSound = new Audio("/sounds/card-flip.mp3");
+flipCardSound.volume = 0.9;
+
+const skipSound = new Audio("/sounds/card-skip.mp3");
+skipSound.volume = 0.9;
+
+const reverseSound = new Audio("/sounds/card-reverse.mp3");
+reverseSound.volume = 0.9;
+
 function play(a: HTMLAudioElement) {
   a.currentTime = 0;
   a.play().catch(() => {
@@ -33,6 +42,18 @@ export function playPickSound() {
 
 export function playDrawSound() {
   play(drawSound);
+}
+
+export function playFlipCardSound() {
+  play(flipCardSound);
+}
+
+export function playSkipSound() {
+  play(skipSound);
+}
+
+export function playReverseSound() {
+  play(reverseSound);
 }
 
 // Light-side color voiceovers (UNO Mobile-style). Dark-side colors have no

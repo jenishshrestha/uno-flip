@@ -1,8 +1,17 @@
-import { useThree } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import type { ActiveSide, Card } from "@uno-flip/shared";
-import { useMemo } from "react";
-import { type Camera, Euler, Quaternion, Vector3 } from "three";
-import { CARD_DEPTH } from "../utils/constants.js";
+import { useMemo, useRef } from "react";
+import {
+  AdditiveBlending,
+  type Camera,
+  CanvasTexture,
+  Euler,
+  type MeshBasicMaterial,
+  Quaternion,
+  SRGBColorSpace,
+  Vector3,
+} from "three";
+import { CARD_DEPTH, CARD_HEIGHT, CARD_WIDTH } from "../utils/constants.js";
 import { projectScreenPercentToY0 } from "../utils/screenProject.js";
 import { Card3D } from "./Card3D.js";
 
@@ -70,15 +79,68 @@ export function getDeckTopTransform(
   return { position, quaternion, scale: config.scale };
 }
 
+// Radial-gradient halo texture (built once at module load, reused).
+// Yellow at center fading to fully transparent at the edge — gives the
+// glow a soft falloff instead of a hard rectangle.
+const HALO_TEX_SIZE = 256;
+const haloTexture = (() => {
+  const canvas = document.createElement("canvas");
+  canvas.width = HALO_TEX_SIZE;
+  canvas.height = HALO_TEX_SIZE;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    const r = HALO_TEX_SIZE / 2;
+    const grad = ctx.createRadialGradient(r, r, 0, r, r, r);
+    grad.addColorStop(0.0, "rgba(255, 215, 0, 0.95)");
+    grad.addColorStop(0.35, "rgba(255, 215, 0, 0.55)");
+    grad.addColorStop(0.7, "rgba(255, 215, 0, 0.15)");
+    grad.addColorStop(1.0, "rgba(255, 215, 0, 0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, HALO_TEX_SIZE, HALO_TEX_SIZE);
+  }
+  const tex = new CanvasTexture(canvas);
+  tex.colorSpace = SRGBColorSpace;
+  return tex;
+})();
+
+// Soft glow plane sitting just behind the top deck card. Larger than the
+// card so the radial falloff bleeds out beyond its edges as a halo.
+// Additive blending so it brightens the table beneath instead of looking
+// like a flat colored sticker. Pulses opacity via useFrame.
+function TopCardHalo({ z }: { z: number }) {
+  const matRef = useRef<MeshBasicMaterial>(null);
+  useFrame(({ clock }) => {
+    const m = matRef.current;
+    if (!m) return;
+    // 0.55 → 1.0 on a ~1.5s breath cycle.
+    m.opacity = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(clock.elapsedTime * 4));
+  });
+  return (
+    <mesh position={[0, 0, z]}>
+      <planeGeometry args={[CARD_WIDTH * 2.4, CARD_HEIGHT * 2.0]} />
+      <meshBasicMaterial
+        ref={matRef}
+        map={haloTexture}
+        transparent
+        opacity={1}
+        depthWrite={false}
+        blending={AdditiveBlending}
+      />
+    </mesh>
+  );
+}
+
 export function DeckPile({
   cards,
   activeSide,
   config = DEFAULT_DECK_CONFIG,
+  highlight = false,
   onClick,
 }: {
   cards: Card[];
   activeSide: ActiveSide;
   config?: DeckConfig;
+  highlight?: boolean;
   onClick?: () => void;
 }) {
   const { screenLeft, screenTop, scale, tiltX, tiltY, tiltZ } = config;
@@ -137,6 +199,12 @@ export function DeckPile({
           />
         );
       })}
+      {/* Halo behind the top card — slightly lower Z than the top so the
+          card itself occludes the halo's center, leaving only the larger
+          halo's edge visible as a soft yellow glow around the card. */}
+      {highlight && (
+        <TopCardHalo z={(visibleCards.length - 1) * STACK_GAP - 0.001} />
+      )}
     </group>
   );
 }

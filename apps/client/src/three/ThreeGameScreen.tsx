@@ -1,6 +1,7 @@
 import { Canvas, useThree } from "@react-three/fiber";
 import type { ActiveSide, Card, GameState, PlayerHand } from "@uno-flip/shared";
 import { canPlayCard, DECK_MAP, resolveCardIds } from "@uno-flip/shared";
+import { AnimatePresence, motion } from "motion/react";
 import {
   Suspense,
   useCallback,
@@ -45,6 +46,7 @@ import {
   PlayerHand3D,
 } from "./components/PlayerHand3D.js";
 import { SceneLighting } from "./components/SceneLighting.js";
+import { TableDirection } from "./components/TableDirection.js";
 import { TableLogo } from "./components/TableLogo.js";
 import type { ThrowPose } from "./components/ThrowCardSequence.js";
 import { ThrowCardSequence } from "./components/ThrowCardSequence.js";
@@ -56,6 +58,61 @@ import {
   CAMERA_POSITION,
 } from "./utils/constants.js";
 import { projectScreenPercentToY0 } from "./utils/screenProject.js";
+
+// Mix of positive, gloating, and "throw at someone" emotes.
+const EMOTES = ["👍", "🤣", "🎉", "❤️", "😡", "🥚", "💩", "🤡"] as const;
+
+// Small popover anchored above a nameplate. Pick an emoji → emit + close.
+function EmotePicker({ onPick }: { onPick: (emote: string) => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8, scale: 0.85 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 8, scale: 0.85 }}
+      transition={{ type: "spring", bounce: 0.4, duration: 0.25 }}
+      style={{
+        position: "absolute",
+        bottom: "calc(100% + 8px)",
+        left: "50%",
+        transform: "translateX(-50%)",
+        padding: 8,
+        borderRadius: 12,
+        background: "rgba(0,0,0,0.85)",
+        border: "1px solid rgba(255,255,255,0.15)",
+        backdropFilter: "blur(6px)",
+        display: "grid",
+        gridTemplateColumns: "repeat(4, 1fr)",
+        gap: 4,
+        zIndex: 80,
+      }}
+    >
+      {EMOTES.map((e) => (
+        <motion.button
+          key={e}
+          type="button"
+          whileHover={{ scale: 1.18 }}
+          whileTap={{ scale: 0.85 }}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onPick(e);
+          }}
+          style={{
+            width: 36,
+            height: 36,
+            fontSize: 22,
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 6,
+            cursor: "pointer",
+            padding: 0,
+          }}
+        >
+          {e}
+        </motion.button>
+      ))}
+    </motion.div>
+  );
+}
 
 // Must match OpponentHand3D's layout constants
 const OPP_CARD_SPACING = 0.15;
@@ -93,6 +150,16 @@ export interface OpponentSeat {
   cards: Card[];
   screenLeft: number;
   screenTop: number;
+}
+
+// One in-flight emote between two players. App.tsx accumulates these from
+// the EMOTE socket event and passes them down; we render flying emojis
+// between the sender's nameplate and the recipient's nameplate.
+export interface EmoteFlight {
+  id: string;
+  fromId: string;
+  toId: string;
+  emote: string;
 }
 
 export interface OpponentPlay {
@@ -150,6 +217,7 @@ function PlayArea({
   onDrawComplete,
   onDeckClick,
   chosenColorHex,
+  highlightDeck,
 }: {
   myCards: Card[];
   myPlayerId: string;
@@ -170,6 +238,7 @@ function PlayArea({
   drawRequest?: DrawRequest | null;
   onDrawComplete?: (card: Card, playerId: string) => void;
   onDeckClick?: (playerId: string) => void;
+  highlightDeck?: boolean;
 }) {
   const { camera } = useThree();
   const [throwing, setThrowing] = useState<{
@@ -462,6 +531,7 @@ function PlayArea({
           cards={visibleDrawPileCards}
           activeSide={activeSide}
           config={deckConfig}
+          highlight={highlightDeck}
           onClick={drawing ? undefined : () => onDeckClick?.(myPlayerId)}
         />
       )}
@@ -603,6 +673,9 @@ export function ThreeGameScreen({
   onPass,
   onCatchUno,
   playableTranslate,
+  emoteFlights,
+  onEmoteFlightLand,
+  onSendEmote,
 }: {
   gameState: GameState;
   hand: PlayerHand | null;
@@ -622,10 +695,16 @@ export function ThreeGameScreen({
   showPass?: boolean;
   onPass?: () => void;
   onCatchUno?: (targetPlayerId: string) => void;
+  emoteFlights?: EmoteFlight[];
+  onEmoteFlightLand?: (id: string) => void;
+  onSendEmote?: (toId: string, emote: string) => void;
   playableTranslate?: [number, number, number];
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isDark = gameState.activeSide === "dark";
+  // PlayerId whose nameplate is currently showing the emote picker. Click a
+  // nameplate to open it, click outside or pick an emote to close.
+  const [emoteTargetId, setEmoteTargetId] = useState<string | null>(null);
 
   const myId = overrideMyId ?? socket.id;
   const myIndex = gameState.players.findIndex((p) => p.id === myId);
@@ -743,6 +822,7 @@ export function ThreeGameScreen({
           <CameraSetup />
           <SceneLighting />
           <TableLogo />
+          <TableDirection direction={gameState.direction} />
 
           {/* Demo dealing animation (test page only) */}
           {demoDealing && myCards.length > 0 && (
@@ -794,13 +874,16 @@ export function ThreeGameScreen({
             drawRequest={drawRequest}
             onDrawComplete={onDrawComplete}
             onDeckClick={onDeckClick}
+            highlightDeck={
+              currentPlayerId === myId && gameState.phase === "playing"
+            }
           />
         </Canvas>
       </Suspense>
 
       {/* ─── Player labels (HTML overlay) ─── */}
 
-      {/* Player name — bottom left */}
+      {/* Player name — bottom left. Click to open the emote picker. */}
       <div
         style={{
           position: "absolute",
@@ -813,7 +896,21 @@ export function ThreeGameScreen({
           fontFamily: "system-ui",
         }}
       >
-        <span
+        <AnimatePresence>
+          {emoteTargetId === myId && (
+            <EmotePicker
+              onPick={(emote) => {
+                if (myId) onSendEmote?.(myId, emote);
+                setEmoteTargetId(null);
+              }}
+            />
+          )}
+        </AnimatePresence>
+        <button
+          type="button"
+          onClick={() =>
+            setEmoteTargetId((cur) => (cur === myId ? null : (myId ?? null)))
+          }
           style={{
             padding: "4px 14px",
             borderRadius: 8,
@@ -828,10 +925,12 @@ export function ThreeGameScreen({
             color: currentPlayerId === myId ? "#FFD700" : "#ccc",
             fontSize: 14,
             fontWeight: currentPlayerId === myId ? "bold" : "normal",
+            cursor: "pointer",
+            fontFamily: "system-ui",
           }}
         >
           {gameState.players[myIndex]?.name ?? "You"}
-        </span>
+        </button>
       </div>
 
       {/* Pass button — shown when the player just drew a playable card */}
@@ -924,7 +1023,21 @@ export function ThreeGameScreen({
               fontFamily: "system-ui",
             }}
           >
-            <span
+            <AnimatePresence>
+              {emoteTargetId === opp.id && (
+                <EmotePicker
+                  onPick={(emote) => {
+                    onSendEmote?.(opp.id, emote);
+                    setEmoteTargetId(null);
+                  }}
+                />
+              )}
+            </AnimatePresence>
+            <button
+              type="button"
+              onClick={() =>
+                setEmoteTargetId((cur) => (cur === opp.id ? null : opp.id))
+              }
               style={{
                 padding: "4px 12px",
                 borderRadius: 8,
@@ -937,10 +1050,12 @@ export function ThreeGameScreen({
                 color: isCurrent ? "#FFD700" : "#ccc",
                 fontSize: 13,
                 fontWeight: isCurrent ? "bold" : "normal",
+                cursor: "pointer",
+                fontFamily: "system-ui",
               }}
             >
               {opp.name}
-            </span>
+            </button>
             <span
               style={{
                 fontSize: 11,
@@ -988,6 +1103,86 @@ export function ThreeGameScreen({
           </div>
         );
       })}
+
+      {/* Click-outside backdrop to dismiss the emote picker */}
+      {emoteTargetId !== null && (
+        <button
+          type="button"
+          aria-label="Close emote picker"
+          onClick={() => setEmoteTargetId(null)}
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            cursor: "default",
+            zIndex: 65,
+          }}
+        />
+      )}
+
+      {/* ─── Emote flights — emojis arcing between player nameplates ─── */}
+      <AnimatePresence>
+        {(emoteFlights ?? []).map((flight) => {
+          const fromAnchor = getPlayerAnchor(
+            flight.fromId,
+            myId,
+            opponents,
+            seats,
+          );
+          const toAnchor = getPlayerAnchor(flight.toId, myId, opponents, seats);
+          if (!fromAnchor || !toAnchor) return null;
+          return (
+            <motion.div
+              key={flight.id}
+              initial={{
+                left: `${fromAnchor.left}%`,
+                top: `${fromAnchor.top}%`,
+                scale: 0.4,
+                opacity: 0,
+              }}
+              animate={{
+                left: `${toAnchor.left}%`,
+                top: `${toAnchor.top}%`,
+                scale: [0.4, 1.6, 1.6, 1.4],
+                opacity: [0, 1, 1, 0],
+              }}
+              transition={{
+                duration: 1.2,
+                times: [0, 0.4, 0.8, 1],
+                ease: "easeOut",
+              }}
+              onAnimationComplete={() => onEmoteFlightLand?.(flight.id)}
+              style={{
+                position: "absolute",
+                fontSize: 56,
+                lineHeight: 1,
+                transform: "translate(-50%, -50%)",
+                pointerEvents: "none",
+                zIndex: 70,
+                filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.6))",
+              }}
+            >
+              {flight.emote}
+            </motion.div>
+          );
+        })}
+      </AnimatePresence>
     </div>
   );
+}
+
+// Map a playerId to its on-screen nameplate anchor (% units, top-left origin).
+// Local player sits at fixed bottom-left; opponents use the seat layout.
+function getPlayerAnchor(
+  playerId: string,
+  myId: string | undefined,
+  opponents: { id: string }[],
+  seats: { left: number; top: number }[],
+): { left: number; top: number } | null {
+  if (playerId === myId) return { left: 8, top: 95 };
+  const idx = opponents.findIndex((o) => o.id === playerId);
+  if (idx === -1) return null;
+  return seats[idx] ?? null;
 }

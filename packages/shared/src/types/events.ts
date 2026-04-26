@@ -10,6 +10,7 @@ export interface ClientToServerEvents {
   DRAW_CARD: () => void;
   CALL_UNO: () => void;
   CATCH_UNO: (data: { targetPlayerId: string }) => void;
+  SEND_EMOTE: (data: { toId: string; emote: string }) => void;
   SELECT_COLOR: (data: { color: LightColor | DarkColor }) => void;
   PASS_TURN: () => void;
   START_NEXT_ROUND: () => void;
@@ -36,6 +37,11 @@ export interface ServerToClientEvents {
     catcherId: string;
     targetId: string;
     targetName: string;
+  }) => void;
+  EMOTE: (data: {
+    fromId: string;
+    toId: string;
+    emote: string;
   }) => void;
   ROUND_OVER: (data: {
     winnerId: string;

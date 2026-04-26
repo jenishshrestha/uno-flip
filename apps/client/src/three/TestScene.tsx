@@ -27,13 +27,13 @@ const FAKE_NAMES = [
 ];
 
 // Player-0's hand in the test scene — fixed 7-card composition for
-// validating the hand layout. Position 1/4/6/7 are Wilds so that against
-// the blue-1 mock discard top only the wilds register as playable.
+// validating the hand layout. Against the blue-1 mock discard top, the
+// wilds and the blue reverse register as playable.
 const TEST_HAND_LIGHT: Array<(card: (typeof FULL_DECK)[number]) => boolean> = [
   (c) => c.light.value === "wild",
   (c) => c.light.color === "yellow" && c.light.value === 3,
   (c) => c.light.color === "red" && c.light.value === 5,
-  (c) => c.light.value === "wild",
+  (c) => c.light.color === "blue" && c.light.value === "reverse",
   (c) => c.light.color === "yellow" && c.light.value === 8,
   (c) => c.light.value === "wild",
   (c) => c.light.value === "wild",

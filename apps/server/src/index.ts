@@ -346,6 +346,18 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ─── EMOTE ───
+  // Pure social signal — no game-state mutation, just rebroadcast.
+  socket.on("SEND_EMOTE", ({ toId, emote }) => {
+    const room = findRoomByPlayerId(socket.id);
+    if (!room) return;
+    io.to(room.code).emit("EMOTE", {
+      fromId: socket.id,
+      toId,
+      emote,
+    });
+  });
+
   // ─── START NEXT ROUND ───
   socket.on("START_NEXT_ROUND", () => {
     const room = findRoomByPlayerId(socket.id);
@@ -355,6 +367,16 @@ io.on("connection", (socket) => {
     if (!game || game.phase !== "round_over") return;
 
     startNextRound(game);
+
+    // Same broadcast pattern as START_GAME so the client wipes its discard
+    // pile and seeds it with the new starting card.
+    const dealInfo = getDealInfo(game);
+    io.to(room.code).emit("DEAL_CARDS", {
+      deals: dealInfo.deals,
+      discardTopCardId: dealInfo.discardTopCardId,
+      drawPileCardIds: game.deck.drawPile.map((c) => c.id),
+    });
+
     broadcastGameState(room.code, room.hostId);
     console.log(`Next round started in room ${room.code}`);
   });

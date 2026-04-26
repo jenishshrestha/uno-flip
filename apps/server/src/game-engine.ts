@@ -35,8 +35,8 @@ import { calculateRoundScores, totalWinnerPoints } from "./scoring.js";
 //
 // Example:
 const TEST_HANDS: (string[] | null)[] | null = [
-  ["wild", "wild draw 2", "flip", "yellow 5", "blue 3", "red 7", "green 2"],
-  ["wild", "draw 1", "skip", "yellow 8", "blue 5", "red 2", "green 9"],
+  ["wild", "wild draw 2", "flip", "yellow 5", "blue 3", "red 7", "blue reverse"],
+  ["wild", "draw 1", "skip", "yellow 8", "blue 5", "red 2", "green reverse"],
 ];
 // const TEST_HANDS: (string[] | null)[] | null = null;
 
